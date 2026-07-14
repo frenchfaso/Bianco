@@ -10,6 +10,7 @@ export default {
   common: {
     loadingArchive: 'Dein lokales Archiv wird geöffnet…',
     close: 'Schließen',
+    cancel: 'Abbrechen',
     save: 'Speichern',
     confirm: 'Bestätigen',
     delete: 'Löschen',
@@ -163,11 +164,6 @@ export default {
       title: 'Datenschutz und Daten',
       description: 'Belege, Bilder, Aufträge und Einstellungen nur von diesem Gerät löschen.',
       deleteAll: 'Alle lokalen Daten löschen'
-    },
-    install: {
-      title: 'Installation',
-      description: 'Installiere Bianco, um die App im Vollbild und die App-Shell ohne Netzwerk zu verwenden.',
-      action: 'PWA installieren'
     }
   },
   provider: {
@@ -270,7 +266,9 @@ export default {
     backupCreated: 'JSON-Sicherung erstellt.'
   },
   confirm: {
+    deleteReceiptTitle: 'Beleg löschen',
     deleteReceipt: 'Diesen Beleg und sein lokales Bild löschen?',
+    deleteAllDataTitle: 'Lokale Daten löschen',
     deleteAllData: 'Alle Bianco-Daten endgültig von diesem Gerät löschen?'
   },
   warning: {
@@ -298,6 +296,10 @@ export default {
   pwa: {
     offlineReady: 'Bianco ist für die Offline-Nutzung bereit.',
     updateAvailable: 'Eine neue Version ist verfügbar.',
-    update: 'Aktualisieren'
+    update: 'Aktualisieren',
+    installTitle: 'Bianco installieren',
+    installDescription: 'Füge Bianco zum Startbildschirm hinzu, um es wie eine App und auch offline zu verwenden.',
+    install: 'Installieren',
+    notNow: 'Nicht jetzt'
   }
 }

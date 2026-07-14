@@ -215,6 +215,7 @@ test('Ollama validates the endpoint, lists models and activates the selection au
 })
 
 test('the only configured model becomes active on a new device and populates a captured receipt', async ({ page }) => {
+  const extractedMerchant = `Panificio Roma ${Date.now()}`
   let directExtractionRequests = 0
   const consoleErrors = []
   page.on('console', (message) => {
@@ -288,8 +289,8 @@ test('the only configured model becomes active on a new device and populates a c
   const extractedReceipt = {
     ...masterReceipt,
     status: 'needs_review',
-    merchantRaw: 'PANIFICIO ROMA',
-    merchantNormalized: 'Panificio Roma',
+    merchantRaw: extractedMerchant.toUpperCase(),
+    merchantNormalized: extractedMerchant,
     transactionDate: '2026-07-14',
     subtotalMinor: 250,
     taxMinor: 0,
@@ -324,9 +325,9 @@ test('the only configured model becomes active on a new device and populates a c
     } }] }
   })
   expect((await itemPush.json()).conflicts).toEqual([])
-  await expect(archive.getByText('Panificio Roma')).toBeVisible({ timeout: 10_000 })
-  await archive.getByText('Panificio Roma').click()
-  await expect(detail.getByLabel('Esercente')).toHaveValue('Panificio Roma', { timeout: 10_000 })
+  await expect(archive.getByText(extractedMerchant)).toBeVisible({ timeout: 10_000 })
+  await archive.getByText(extractedMerchant).click()
+  await expect(detail.getByLabel('Esercente')).toHaveValue(extractedMerchant, { timeout: 10_000 })
   await expect(detail.getByLabel('Totale (EUR)')).toHaveValue('2.50')
   await expect(detail.getByLabel('Nome prodotto 1')).toHaveValue('Pane')
   await expect(detail.getByRole('button', { name: 'Salva', exact: true })).toHaveCount(1)
@@ -335,7 +336,7 @@ test('the only configured model becomes active on a new device and populates a c
   await detail.getByRole('button', { name: 'Salva', exact: true }).click()
   await expect(detail).not.toBeVisible()
   await expect(archive).toBeVisible()
-  await expect(archive.getByText('Panificio Roma')).toBeVisible()
+  await expect(archive.getByText(extractedMerchant)).toBeVisible()
   expect(directExtractionRequests).toBe(0)
   expect(consoleErrors.filter((message) => message.includes('Canvas is already in use'))).toEqual([])
 })
@@ -350,10 +351,75 @@ test('settings is a modal and Escape restores focus to its trigger', async ({ pa
   await expect(settings.getByRole('heading', { name: 'Impostazioni' })).toBeFocused()
   await expect(page.locator('html')).toHaveClass(/modal-is-open/)
 
+  const deleteAllButton = settings.getByRole('button', { name: 'Elimina tutti i dati locali' })
+  await deleteAllButton.click()
+  const confirmation = page.getByRole('dialog', { name: 'Cancella dati locali' })
+  await expect(confirmation).toBeVisible()
+  await confirmation.getByRole('button', { name: 'Annulla' }).click()
+  await expect(confirmation).not.toBeVisible()
+  await expect(settings).toBeVisible()
+  await expect(deleteAllButton).toBeFocused()
+
   await page.keyboard.press('Escape')
   await expect(settings).not.toBeVisible()
   await expect(page.locator('html')).not.toHaveClass(/modal-is-open/)
   await expect(trigger).toBeFocused()
+})
+
+test('PWA installation is suggested outside settings and respects not now', async ({ page }) => {
+  await page.goto('/')
+  await expect(page.getByRole('heading', { name: 'Panoramica', level: 1 })).toBeVisible()
+
+  await page.getByRole('button', { name: 'Impostazioni' }).click()
+  const settings = page.getByRole('dialog', { name: 'Impostazioni' })
+  await expect(settings.getByRole('heading', { name: 'Installazione' })).toHaveCount(0)
+  await settings.getByRole('button', { name: 'Chiudi impostazioni' }).click()
+
+  const dispatchInstallPrompt = () => page.evaluate(() => {
+    const event = new globalThis.Event('beforeinstallprompt', { cancelable: true })
+    Object.defineProperties(event, {
+      prompt: { value: async () => {} },
+      userChoice: { value: Promise.resolve({ outcome: 'dismissed' }) }
+    })
+    window.dispatchEvent(event)
+  })
+
+  await dispatchInstallPrompt()
+  const suggestion = page.getByRole('region', { name: 'Installa Bianco' })
+  await expect(suggestion).toBeVisible()
+  await suggestion.getByRole('button', { name: 'Non ora' }).click()
+  await expect(suggestion).not.toBeVisible()
+  await expect.poll(() => page.evaluate(() => Boolean(localStorage.getItem('bianco-install-dismissed-at')))).toBe(true)
+
+  await dispatchInstallPrompt()
+  await expect(suggestion).not.toBeVisible()
+})
+
+test('destructive actions use an accessible modal instead of native confirm', async ({ page }) => {
+  const merchant = `Conferma modale ${Date.now()}`
+  await page.goto('/')
+  await createManual(page, merchant, '4.20')
+  await page.getByRole('region', { name: 'Archivio' }).getByText(merchant).click()
+  const receiptDetail = page.getByRole('dialog', { name: 'Controlla lo scontrino' })
+  const deleteButton = receiptDetail.getByRole('button', { name: 'Elimina', exact: true })
+
+  await page.evaluate(() => {
+    window.__nativeConfirmCalled = false
+    window.confirm = () => {
+      window.__nativeConfirmCalled = true
+      return false
+    }
+  })
+  await deleteButton.click()
+
+  const confirmation = page.getByRole('dialog', { name: 'Elimina scontrino' })
+  await expect(confirmation).toBeVisible()
+  await expect(confirmation.getByRole('heading', { name: 'Elimina scontrino' })).toBeFocused()
+  await expect.poll(() => page.evaluate(() => window.__nativeConfirmCalled)).toBe(false)
+  await confirmation.getByRole('button', { name: 'Annulla' }).click()
+  await expect(confirmation).not.toBeVisible()
+  await expect(receiptDetail).toBeVisible()
+  await expect(deleteButton).toBeFocused()
 })
 
 test('a forced dark theme survives a reload', async ({ page }) => {

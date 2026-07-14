@@ -24,6 +24,8 @@ import { createId } from './utils/ids.js'
 const emptyInsights = computeInsights([], [])
 const THEME_STORAGE_KEY = 'bianco-theme'
 const LANGUAGE_STORAGE_KEY = 'bianco-language'
+const INSTALL_DISMISSED_STORAGE_KEY = 'bianco-install-dismissed-at'
+const INSTALL_DISMISSAL_TTL_MS = 7 * 24 * 60 * 60 * 1000
 const themePreferences = new Set(['auto', 'light', 'dark'])
 const languagePreferences = new Set(['auto', 'en', 'it', 'de', 'es', 'fr'])
 const categoryTranslationKeys = {
@@ -138,12 +140,26 @@ export function biancoApp() {
     includeImagesInBackup: false,
     storageUsage: '—',
     installPrompt: null,
+    installSuggestionVisible: false,
+    confirmation: { title: '', message: '', confirmLabel: '', destructive: false },
+    confirmationResolver: null,
+    confirmationReturnFocus: null,
     updateAvailable: false,
 
     async init() {
       this.themeMediaQuery = window.matchMedia('(prefers-color-scheme: dark)')
       this.themeMediaQuery.addEventListener('change', () => {
         if (this.themePreference === 'auto') this.updateThemeColor()
+      })
+      window.addEventListener('beforeinstallprompt', (event) => {
+        event.preventDefault()
+        this.installPrompt = event
+        this.installSuggestionVisible = this.shouldSuggestInstall()
+      })
+      window.addEventListener('appinstalled', () => {
+        this.installPrompt = null
+        this.installSuggestionVisible = false
+        try { window.localStorage.removeItem(INSTALL_DISMISSED_STORAGE_KEY) } catch { /* Storage may be disabled. */ }
       })
       if (!supportsLocalArchive()) {
         this.notify(this.t('error.secureContextRequired'), 'error')
@@ -194,10 +210,6 @@ export function biancoApp() {
       window.addEventListener('bianco-offline-ready', () => this.notify(this.t('notification.offlineReady')))
       window.addEventListener('languagechange', () => {
         if (this.languagePreference === 'auto') void this.updateLanguagePreference('auto')
-      })
-      window.addEventListener('beforeinstallprompt', (event) => {
-        event.preventDefault()
-        this.installPrompt = event
       })
       window.setInterval(() => void this.runJobs(), 30_000)
     },
@@ -563,7 +575,13 @@ export function biancoApp() {
     },
 
     async removeCurrentReceipt() {
-      if (!window.confirm(this.t('confirm.deleteReceipt'))) return
+      const confirmed = await this.confirmAction({
+        title: this.t('confirm.deleteReceiptTitle'),
+        message: this.t('confirm.deleteReceipt'),
+        confirmLabel: this.t('common.delete'),
+        destructive: true
+      })
+      if (!confirmed) return
       await deleteReceipt(database, this.detail.id)
       this.closeDetail()
       this.notify(this.t('notification.receiptDeleted'))
@@ -821,7 +839,13 @@ export function biancoApp() {
     },
 
     async wipeLocalData() {
-      if (!window.confirm(this.t('confirm.deleteAllData'))) return
+      const confirmed = await this.confirmAction({
+        title: this.t('confirm.deleteAllDataTitle'),
+        message: this.t('confirm.deleteAllData'),
+        confirmLabel: this.t('common.delete'),
+        destructive: true
+      })
+      if (!confirmed) return
       try {
         window.localStorage.removeItem(THEME_STORAGE_KEY)
         window.localStorage.removeItem(LANGUAGE_STORAGE_KEY)
@@ -840,9 +864,63 @@ export function biancoApp() {
     },
 
     async installApp() {
-      if (!this.installPrompt) return
-      await this.installPrompt.prompt()
-      this.installPrompt = null
+      const prompt = this.installPrompt
+      if (!prompt) return
+      this.installSuggestionVisible = false
+      try {
+        await prompt.prompt()
+        const choice = await prompt.userChoice
+        if (choice?.outcome !== 'accepted') this.rememberInstallDismissal()
+      } finally {
+        this.installPrompt = null
+      }
+    },
+
+    shouldSuggestInstall() {
+      if (window.matchMedia('(display-mode: standalone)').matches || navigator.standalone === true) return false
+      try {
+        const dismissedAt = Number(window.localStorage.getItem(INSTALL_DISMISSED_STORAGE_KEY))
+        return !Number.isFinite(dismissedAt) || dismissedAt <= 0 || Date.now() - dismissedAt >= INSTALL_DISMISSAL_TTL_MS
+      } catch {
+        return true
+      }
+    },
+
+    rememberInstallDismissal() {
+      try { window.localStorage.setItem(INSTALL_DISMISSED_STORAGE_KEY, String(Date.now())) } catch { /* Storage may be disabled. */ }
+    },
+
+    dismissInstallSuggestion() {
+      this.installSuggestionVisible = false
+      this.rememberInstallDismissal()
+    },
+
+    confirmAction({ title, message, confirmLabel, destructive = false }) {
+      if (this.confirmationResolver) this.finishConfirmation(false)
+      this.confirmation = { title, message, confirmLabel, destructive }
+      this.confirmationReturnFocus = document.activeElement
+      return new Promise((resolve) => {
+        this.confirmationResolver = resolve
+        this.$nextTick?.(() => {
+          const dialog = this.$refs.confirmationDialog
+          if (!dialog?.open) dialog?.showModal()
+          this.$refs.confirmationTitle?.focus()
+        })
+      })
+    },
+
+    finishConfirmation(confirmed) {
+      const resolve = this.confirmationResolver
+      const returnFocus = this.confirmationReturnFocus
+      this.confirmationResolver = null
+      this.confirmationReturnFocus = null
+      if (this.$refs.confirmationDialog?.open) this.$refs.confirmationDialog.close()
+      resolve?.(confirmed)
+      this.$nextTick?.(() => returnFocus?.focus?.())
+    },
+
+    onConfirmationClosed() {
+      if (this.confirmationResolver) this.finishConfirmation(false)
     },
 
     applyUpdate() {

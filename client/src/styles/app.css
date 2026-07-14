@@ -506,6 +506,32 @@ article h2, article h3 { color: var(--ink); }
 #settings-dialog .close-button:focus-visible { outline: 3px solid var(--pico-primary-focus); outline-offset: 2px; }
 #settings-title:focus { outline: none; }
 
+#confirmation-dialog {
+  width: min(30rem, calc(100vw - 2rem));
+  max-width: 30rem;
+  padding: 0;
+  border: 0;
+  color: var(--ink);
+  background: transparent;
+}
+#confirmation-dialog::backdrop {
+  background: var(--modal-overlay);
+  -webkit-backdrop-filter: blur(5px);
+  backdrop-filter: blur(5px);
+}
+#confirmation-dialog > article {
+  margin: 0;
+  border: 1px solid var(--article-border);
+  background: var(--panel-solid);
+  box-shadow: var(--modal-shadow);
+}
+#confirmation-dialog > article > header { display: flex; align-items: flex-start; justify-content: space-between; }
+#confirmation-dialog > article > header h2 { margin: 0; font-size: 1.15rem; }
+#confirmation-title:focus { outline: none; }
+.confirmation-actions { display: flex; gap: 0.65rem; justify-content: flex-end; margin-top: 1.25rem; }
+.confirmation-actions button { width: auto; margin: 0; }
+.confirmation-actions .danger { color: var(--on-accent); border-color: var(--danger-action-background); background: var(--danger-action-background); }
+
 .modal-backdrop {
   position: fixed;
   z-index: 80;
@@ -539,14 +565,10 @@ article h2, article h3 { color: var(--ink); }
 .detail-actions button { width: auto; margin: 0; }
 .detail-actions .spacer { flex: 1; }
 
-.toast, .update-banner {
-  position: fixed;
-  z-index: 120;
-  right: 1rem;
+.toast, .update-banner, .install-toast {
   display: flex;
   gap: 1rem;
   align-items: center;
-  max-width: min(26rem, calc(100vw - 2rem));
   padding: 0.8rem 1rem;
   border: 1px solid var(--toast-border);
   border-radius: 0.8rem;
@@ -555,9 +577,25 @@ article h2, article h3 { color: var(--ink); }
   box-shadow: var(--shadow);
   font-size: 0.8rem;
 }
+.toast, .update-banner { position: fixed; z-index: 120; right: 1rem; max-width: min(26rem, calc(100vw - 2rem)); }
 .toast { bottom: 5.7rem; }
 .toast.error { color: var(--danger); border-color: var(--toast-danger-border); }
 .update-banner { top: 1rem; }
+.toast-stack {
+  position: fixed;
+  z-index: 120;
+  right: 1rem;
+  bottom: calc(5.2rem + env(safe-area-inset-bottom));
+  display: grid;
+  gap: 0.65rem;
+  width: min(30rem, calc(100vw - 2rem));
+}
+.toast-stack > .toast, .toast-stack > .install-toast { position: static; width: 100%; max-width: none; }
+.install-toast { align-items: flex-start; justify-content: space-between; }
+.install-toast-copy { display: grid; gap: 0.2rem; }
+.install-toast-copy span { color: var(--muted); line-height: 1.35; }
+.install-toast-actions { display: flex; flex: 0 0 auto; gap: 0.45rem; }
+.install-toast-actions button { width: auto; margin: 0; white-space: nowrap; }
 
 @media (max-width: 760px) {
   .app-header { min-height: 4.2rem; }
@@ -573,6 +611,9 @@ article h2, article h3 { color: var(--ink); }
   .receipt-row { grid-template-columns: 0.3rem minmax(0, 1fr) auto; gap: 0.65rem; padding: 0.75rem; }
   .receipt-copy strong { max-width: 48vw; font-size: 0.86rem; }
   .receipt-value strong { font-size: 0.86rem; }
+  .install-toast { display: grid; }
+  .install-toast-actions { width: 100%; }
+  .install-toast-actions button { flex: 1; }
   #settings-dialog[open] {
     align-items: stretch;
   }

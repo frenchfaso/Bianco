@@ -289,13 +289,28 @@
               <button class="outline danger" @click="wipeLocalData" x-text="t('settings.privacy.deleteAll')"></button>
             </article>
 
-            <article>
-              <h3 x-text="t('settings.install.title')"></h3>
-              <p x-text="t('settings.install.description')"></p>
-              <button class="outline" @click="installApp" :disabled="!installPrompt" x-text="t('settings.install.action')"></button>
-            </article>
           </div>
           <div class="toast dialog-toast" x-show="toast.message && settingsOpen" x-transition :class="toast.type" x-text="toast.message"></div>
+        </article>
+      </dialog>
+
+      <dialog
+        id="confirmation-dialog"
+        x-ref="confirmationDialog"
+        aria-labelledby="confirmation-title"
+        @cancel.prevent="finishConfirmation(false)"
+        @close="onConfirmationClosed"
+      >
+        <article>
+          <header>
+            <h2 id="confirmation-title" x-ref="confirmationTitle" tabindex="-1" x-text="confirmation.title"></h2>
+            <button class="close-button" :aria-label="t('common.close')" @click="finishConfirmation(false)">×</button>
+          </header>
+          <p x-text="confirmation.message"></p>
+          <footer class="confirmation-actions">
+            <button class="outline" @click="finishConfirmation(false)" x-text="t('common.cancel')"></button>
+            <button :class="{ danger: confirmation.destructive }" @click="finishConfirmation(true)" x-text="confirmation.confirmLabel"></button>
+          </footer>
         </article>
       </dialog>
 
@@ -348,7 +363,25 @@
       <div class="update-banner" x-show="updateAvailable">
         <span x-text="t('pwa.updateAvailable')"></span><button class="compact" @click="applyUpdate" x-text="t('pwa.update')"></button>
       </div>
-      <div class="toast" x-show="toast.message && !settingsOpen" x-transition :class="toast.type" x-text="toast.message"></div>
+      <div class="toast-stack">
+        <section
+          class="install-toast"
+          x-show="installSuggestionVisible"
+          x-transition
+          role="region"
+          aria-labelledby="install-suggestion-title"
+        >
+          <div class="install-toast-copy">
+            <strong id="install-suggestion-title" x-text="t('pwa.installTitle')"></strong>
+            <span x-text="t('pwa.installDescription')"></span>
+          </div>
+          <div class="install-toast-actions">
+            <button class="compact" @click="installApp" x-text="t('pwa.install')"></button>
+            <button class="outline compact" @click="dismissInstallSuggestion" x-text="t('pwa.notNow')"></button>
+          </div>
+        </section>
+        <div class="toast" x-show="toast.message && !settingsOpen" x-transition :class="toast.type" x-text="toast.message"></div>
+      </div>
     </div>
     <script type="module" src="/src/main.js"></script>
   </body>

@@ -10,6 +10,7 @@ export default {
   common: {
     loadingArchive: 'Abriendo tu archivo local…',
     close: 'Cerrar',
+    cancel: 'Cancelar',
     save: 'Guardar',
     confirm: 'Confirmar',
     delete: 'Eliminar',
@@ -163,11 +164,6 @@ export default {
       title: 'Privacidad y datos',
       description: 'Elimina recibos, imágenes, tareas y ajustes solo de este dispositivo.',
       deleteAll: 'Eliminar todos los datos locales'
-    },
-    install: {
-      title: 'Instalación',
-      description: 'Instala Bianco para abrirlo a pantalla completa y usar la estructura de la aplicación sin red.',
-      action: 'Instalar PWA'
     }
   },
   provider: {
@@ -270,7 +266,9 @@ export default {
     backupCreated: 'Copia JSON creada.'
   },
   confirm: {
+    deleteReceiptTitle: 'Eliminar recibo',
     deleteReceipt: '¿Eliminar este recibo y su imagen local?',
+    deleteAllDataTitle: 'Eliminar datos locales',
     deleteAllData: '¿Eliminar definitivamente todos los datos de Bianco de este dispositivo?'
   },
   warning: {
@@ -298,6 +296,10 @@ export default {
   pwa: {
     offlineReady: 'Bianco está listo para usarse sin conexión.',
     updateAvailable: 'Hay una nueva versión disponible.',
-    update: 'Actualizar'
+    update: 'Actualizar',
+    installTitle: 'Instalar Bianco',
+    installDescription: 'Añádelo a la pantalla de inicio para usarlo como una aplicación, incluso sin conexión.',
+    install: 'Instalar',
+    notNow: 'Ahora no'
   }
 }
