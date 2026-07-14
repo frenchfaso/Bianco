@@ -1,0 +1,76 @@
+name: bianco-test
+
+services:
+  client-test:
+    build:
+      context: ./client
+      target: deps
+    working_dir: /app
+    volumes:
+      - ./client:/app
+      - client_test_node_modules:/app/node_modules
+    command: ["npm", "test", "--", "--run"]
+
+  api-test:
+    build:
+      context: ./server
+      target: test
+    working_dir: /app
+    volumes:
+      - ./server:/app
+    environment:
+      BIANCO_DATABASE_URL: sqlite:////tmp/bianco-test.db
+      BIANCO_DATA_DIR: /tmp/bianco-test-data
+      BIANCO_SYNC_TOKEN: test-token
+      BIANCO_AI_PROVIDER: none
+    command: ["python", "-m", "pytest", "-q"]
+
+  test-api:
+    build:
+      context: ./server
+      target: production
+    environment:
+      BIANCO_DATABASE_URL: sqlite:////data/bianco.db
+      BIANCO_DATA_DIR: /data
+      BIANCO_SYNC_TOKEN: test-token
+      BIANCO_AI_PROVIDER: none
+    healthcheck:
+      test: ["CMD-SHELL", "python -c 'import urllib.request; urllib.request.urlopen(\"http://localhost:8000/api/health/live\")'"]
+      interval: 2s
+      timeout: 2s
+      retries: 20
+    networks:
+      default:
+        aliases:
+          - api
+
+  test-web:
+    build:
+      context: ./client
+      target: production
+    environment:
+      BIANCO_SITE_ADDRESS: :80
+    depends_on:
+      test-api:
+        condition: service_healthy
+
+  e2e-test:
+    image: mcr.microsoft.com/playwright:v1.61.1-noble
+    working_dir: /work
+    volumes:
+      - ./:/work
+      - e2e_node_modules:/work/client/node_modules
+    environment:
+      PLAYWRIGHT_BASE_URL: http://localhost
+      BIANCO_TEST_TOKEN: test-token
+    network_mode: service:test-web
+    depends_on:
+      - test-web
+    command:
+      - sh
+      - -c
+      - test -d client/node_modules/@playwright/test || npm --prefix client ci --ignore-scripts --no-audit --no-fund; npm --prefix client run test:e2e
+
+volumes:
+  client_test_node_modules:
+  e2e_node_modules:
