@@ -19,6 +19,8 @@ function aggregateBy(receipts, keyOf) {
   return map
 }
 
+export const UNKNOWN_MERCHANT_ID = '__unknown_merchant__'
+
 function currentPeriod(now) {
   const end = new Date(now)
   const start = new Date(end.getFullYear(), end.getMonth(), 1)
@@ -134,8 +136,8 @@ export function computeInsights(receipts, items, options = {}) {
     aggregateBy(previous, (receipt) => receipt.categoryId)
   ).sort((a, b) => b.total - a.total)
   const merchants = mergedComparison(
-    aggregateBy(current, (receipt) => receipt.merchantNormalized || receipt.merchantRaw || 'Senza esercente'),
-    aggregateBy(previous, (receipt) => receipt.merchantNormalized || receipt.merchantRaw || 'Senza esercente')
+    aggregateBy(current, (receipt) => receipt.merchantNormalized || receipt.merchantRaw || UNKNOWN_MERCHANT_ID),
+    aggregateBy(previous, (receipt) => receipt.merchantNormalized || receipt.merchantRaw || UNKNOWN_MERCHANT_ID)
   ).sort((a, b) => b.total - a.total)
   const currentIds = new Set(current.map((receipt) => receipt.id))
   const { products, priceChanges } = productInsights(items, usable, currentIds)

@@ -76,10 +76,7 @@ export async function createCapturedReceipt(db, processed, currency = 'EUR') {
     })
     await image.putAttachment({ id: 'full', data: processed.full, type: processed.mimeType })
     await image.putAttachment({ id: 'thumbnail', data: processed.thumbnail, type: processed.mimeType })
-    await db.jobs.bulkInsert([
-      newJob('ai-extraction', receipt.id),
-      newJob('image-upload', receipt.id)
-    ])
+    await db.jobs.insert(newJob('image-upload', receipt.id))
     const receiptDocument = await db.receipts.findOne(receipt.id).exec()
     await receiptDocument.incrementalPatch({
       status: 'queued',
@@ -131,30 +128,6 @@ export async function replaceReceiptItems(db, receiptId, items, userEdited = fal
     updatedAt: timestamp,
     updatedByDevice: getDeviceId()
   })))
-}
-
-export async function applyExtraction(db, receiptId, extraction, provider) {
-  await updateReceipt(db, receiptId, {
-    status: 'needs_review',
-    transactionDate: extraction.transactionDate,
-    merchantRaw: extraction.merchant.rawName,
-    merchantNormalized: extraction.merchant.normalizedName,
-    currency: extraction.currency,
-    subtotalMinor: extraction.subtotalMinor,
-    taxMinor: extraction.taxMinor,
-    discountMinor: extraction.discountMinor,
-    totalMinor: extraction.totalMinor,
-    categoryId: extraction.categoryId,
-    overallConfidence: extraction.confidence,
-    warnings: extraction.warnings,
-    ai: {
-      providerId: provider.id,
-      modelId: provider.model || null,
-      promptVersion: 'receipt-v1',
-      schemaVersion: extraction.schemaVersion
-    }
-  })
-  await replaceReceiptItems(db, receiptId, extraction.items)
 }
 
 export async function deleteReceipt(db, receiptId) {

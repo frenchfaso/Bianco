@@ -1,69 +1,81 @@
 <!doctype html>
-<html lang="it">
+<html lang="en">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
-    <meta name="theme-color" content="#ffffff" />
-    <meta name="description" content="Scontrini chiari, anche offline." />
+    <meta name="theme-color" content="#f7faf9" />
+    <meta name="description" content="Clear receipts, even offline." />
     <link rel="icon" href="/icon.svg" />
     <title>Bianco</title>
+    <script src="/theme-init.js"></script>
   </head>
   <body>
     <div x-data="biancoApp" x-init="init()" x-cloak class="app-shell">
       <header class="app-header container">
-        <a href="#" class="brand" @click.prevent="view = 'dashboard'" aria-label="Bianco, dashboard">
+        <a href="#" class="brand" @click.prevent="view = 'dashboard'" :aria-label="t('brand.homeAria')">
           <img src="/icon.svg" width="38" height="38" alt="" />
-          <span>Bianco<small>Your receipts, made clear</small></span>
+          <span>Bianco<small x-text="t('brand.tagline')"></small></span>
         </a>
-        <span class="connection-pill" :class="online ? 'online' : 'offline'">
-          <span aria-hidden="true">●</span>
-          <span x-text="online ? syncLabel : 'Offline'"></span>
-        </span>
+        <div class="header-actions">
+          <span class="connection-pill" :class="online ? 'online' : 'offline'">
+            <span aria-hidden="true">●</span>
+            <span x-text="online ? syncLabel : t('connection.offline')"></span>
+          </span>
+          <button
+            class="header-settings"
+            :class="{ active: settingsOpen }"
+            @click="openSettings($event)"
+            :aria-label="t('settings.openAria')"
+            :title="t('settings.openAria')"
+            aria-haspopup="dialog"
+            aria-controls="settings-dialog"
+            :aria-expanded="settingsOpen"
+          >
+            <span aria-hidden="true">⚙</span>
+          </button>
+        </div>
       </header>
 
       <main class="container app-main" aria-live="polite">
         <section x-show="loading" class="loading-state">
-          <span aria-busy="true">Apro il tuo archivio locale…</span>
+          <span aria-busy="true" x-text="t('common.loadingArchive')"></span>
         </section>
 
         <section x-show="!loading && view === 'dashboard'" aria-labelledby="dashboard-title">
           <div class="section-heading">
             <div>
-              <p class="eyebrow">Mese corrente</p>
-              <h1 id="dashboard-title">Panoramica</h1>
+              <p class="eyebrow" x-text="t('dashboard.eyebrow')"></p>
+              <h1 id="dashboard-title" x-text="t('dashboard.title')"></h1>
             </div>
-            <button class="outline compact" @click="syncNow" :disabled="syncStatus === 'syncing' || !settings.syncEnabled">
-              Sincronizza
-            </button>
           </div>
 
           <div class="summary-grid">
             <article class="hero-total">
-              <small>Spesa del periodo</small>
+              <small x-text="t('dashboard.periodSpend')"></small>
               <strong x-text="money(insights.total)"></strong>
               <p :class="insights.difference > 0 ? 'negative' : 'positive'">
                 <span x-text="signedMoney(insights.difference)"></span>
                 <span x-show="insights.changePercent !== null" x-text="` · ${signedPercent(insights.changePercent)}`"></span>
-                <small> rispetto al periodo precedente</small>
+                <small x-text="t('dashboard.previousComparison')"></small>
               </p>
             </article>
             <article>
-              <small>Scontrini salvati</small>
+              <small x-text="t('dashboard.savedReceipts')"></small>
               <strong x-text="receipts.length"></strong>
-              <p class="muted"><span x-text="pendingCount"></span> attività in coda</p>
+              <p class="muted" x-text="t('dashboard.pendingActivities', { count: pendingCount })"></p>
             </article>
           </div>
 
           <div class="dashboard-grid">
             <article>
               <div class="card-heading">
-                <h2>Categorie</h2>
+                <h2 x-text="t('dashboard.categories.title')"></h2>
                 <small x-text="money(insights.total)"></small>
               </div>
               <div class="chart-wrap" x-show="insights.categories.some((entry) => entry.total > 0)">
-                <canvas x-ref="categoryChart" aria-label="Spesa per categoria"></canvas>
+                <canvas x-ref="categoryChart" :aria-label="t('dashboard.categories.chartAria')"></canvas>
               </div>
-              <p class="empty-copy" x-show="!insights.categories.some((entry) => entry.total > 0)">I dati del mese appariranno qui.</p>
+              <p class="empty-copy" x-show="!insights.categories.some((entry) => entry.total > 0)" x-text="t('dashboard.categories.empty')"></p>
               <div class="compact-list">
                 <template x-for="entry in insights.categories.filter((item) => item.total > 0).slice(0, 5)" :key="entry.id">
                   <div><span x-text="categoryLabel(entry.id)"></span><strong x-text="money(entry.total)"></strong></div>
@@ -72,15 +84,15 @@
             </article>
 
             <article>
-              <div class="card-heading"><h2>Cosa emerge</h2><small>Calcolo locale</small></div>
+              <div class="card-heading"><h2 x-text="t('dashboard.insights.title')"></h2><small x-text="t('dashboard.insights.local')"></small></div>
               <ul class="insight-list" x-show="insights.deterministic.length">
                 <template x-for="entry in insights.deterministic" :key="`${entry.type}-${entry.id}`">
                   <li x-text="insightText(entry)"></li>
                 </template>
               </ul>
-              <p class="empty-copy" x-show="!insights.deterministic.length">Servono variazioni di almeno <span x-text="money(settings.insightMinimumMinor)"></span> e <span x-text="`${settings.insightMinimumPercent}%`"></span>.</p>
+              <p class="empty-copy" x-show="!insights.deterministic.length" x-text="t('dashboard.insights.thresholdDescription', { amount: money(settings.insightMinimumMinor), percent: settings.insightMinimumPercent })"></p>
               <div x-show="settings.aiSummary" class="ai-summary">
-                <small>Sintesi AI · solo dati aggregati</small>
+                <small x-text="t('dashboard.insights.aiAggregatedOnly')"></small>
                 <ul>
                   <template x-for="observation in (settings.aiSummary?.observations || [])" :key="observation">
                     <li x-text="observation"></li>
@@ -88,59 +100,57 @@
                 </ul>
                 <p x-show="settings.aiSummary?.suggestion" x-text="settings.aiSummary?.suggestion"></p>
               </div>
-              <button class="secondary outline" @click="generateAiSummary" :disabled="busy || !settings.selectedAiProvider || !settings.syncToken">
-                Genera sintesi
-              </button>
+              <button class="secondary outline" @click="generateAiSummary" :disabled="busy || !settings.selectedAiProvider" x-text="t('dashboard.insights.generate')"></button>
             </article>
           </div>
 
           <div class="dashboard-grid three">
             <article>
-              <div class="card-heading"><h2>Esercenti</h2><small>Top 5</small></div>
+              <div class="card-heading"><h2 x-text="t('dashboard.merchants.title')"></h2><small x-text="t('dashboard.merchants.top')"></small></div>
               <ol class="rank-list">
                 <template x-for="entry in insights.merchants.filter((item) => item.total > 0).slice(0, 5)" :key="entry.id">
-                  <li><span><strong x-text="entry.id"></strong><small x-text="`${entry.count} acquisti`"></small></span><b x-text="money(entry.total)"></b></li>
+                  <li><span><strong x-text="merchantLabel(entry.id)"></strong><small x-text="t('dashboard.merchants.purchases', { count: entry.count })"></small></span><b x-text="money(entry.total)"></b></li>
                 </template>
               </ol>
-              <p class="empty-copy" x-show="!insights.merchants.some((entry) => entry.total > 0)">Nessun esercente nel periodo.</p>
+              <p class="empty-copy" x-show="!insights.merchants.some((entry) => entry.total > 0)" x-text="t('dashboard.merchants.empty')"></p>
             </article>
             <article>
-              <div class="card-heading"><h2>Prodotti</h2><small>Top 5</small></div>
+              <div class="card-heading"><h2 x-text="t('dashboard.products.title')"></h2><small x-text="t('dashboard.products.top')"></small></div>
               <ol class="rank-list">
                 <template x-for="entry in insights.products.slice(0, 5)" :key="entry.id">
-                  <li><span><strong x-text="entry.id"></strong><small x-text="`${number(entry.quantity)} unità · ${entry.frequency} volte`"></small></span><b x-text="money(entry.total)"></b></li>
+                  <li><span><strong x-text="entry.id"></strong><small x-text="t('dashboard.products.quantityFrequency', { quantity: t('dashboard.products.units', { count: entry.quantity }), frequency: t('dashboard.products.times', { count: entry.frequency }) })"></small></span><b x-text="money(entry.total)"></b></li>
                 </template>
               </ol>
-              <p class="empty-copy" x-show="!insights.products.length">I prodotti estratti appariranno qui.</p>
+              <p class="empty-copy" x-show="!insights.products.length" x-text="t('dashboard.products.empty')"></p>
             </article>
             <article>
-              <div class="card-heading"><h2>Prezzi</h2><small>Ultimo vs media</small></div>
+              <div class="card-heading"><h2 x-text="t('dashboard.prices.title')"></h2><small x-text="t('dashboard.prices.latestVsAverage')"></small></div>
               <div class="price-list">
                 <template x-for="entry in insights.priceChanges.slice(0, 5)" :key="entry.id">
                   <div><span><strong x-text="entry.id"></strong><small x-text="`${money(entry.previousAverage)} → ${money(entry.latest)}`"></small></span><b :class="entry.difference > 0 ? 'negative' : 'positive'" x-text="signedPercent(entry.changePercent)"></b></div>
                 </template>
               </div>
-              <p class="empty-copy" x-show="!insights.priceChanges.length">Servono almeno due prezzi unitari.</p>
+              <p class="empty-copy" x-show="!insights.priceChanges.length" x-text="t('dashboard.prices.empty')"></p>
             </article>
           </div>
         </section>
 
         <section x-show="!loading && view === 'archive'" aria-labelledby="archive-title">
           <div class="section-heading">
-            <div><p class="eyebrow">Sul dispositivo</p><h1 id="archive-title">Archivio</h1></div>
-            <button class="compact" @click="newManual">+ Manuale</button>
+            <div><p class="eyebrow" x-text="t('archive.eyebrow')"></p><h1 id="archive-title" x-text="t('archive.title')"></h1></div>
+            <button class="compact" @click="newManual" x-text="t('archive.addManual')"></button>
           </div>
           <div class="filter-grid">
-            <input type="search" x-model.debounce.200ms="filters.search" placeholder="Cerca esercente o prodotto" aria-label="Cerca" />
-            <select x-model="filters.category" aria-label="Filtra categoria">
-              <option value="">Tutte le categorie</option>
-              <template x-for="category in categories" :key="category.id"><option :value="category.id" x-text="category.label"></option></template>
+            <input type="search" x-model.debounce.200ms="filters.search" :placeholder="t('archive.searchPlaceholder')" :aria-label="t('archive.searchAria')" />
+            <select x-model="filters.category" :aria-label="t('archive.categoryFilterAria')">
+              <option value="" x-text="t('archive.allCategories')"></option>
+              <template x-for="category in categories" :key="category.id"><option :value="category.id" x-text="categoryLabel(category.id)"></option></template>
             </select>
-            <select x-model="filters.period" aria-label="Filtra periodo">
-              <option value="all">Tutti i periodi</option>
-              <option value="month">Mese corrente</option>
-              <option value="previous">Mese precedente</option>
-              <option value="year">Anno corrente</option>
+            <select x-model="filters.period" :aria-label="t('archive.periodFilterAria')">
+              <option value="all" x-text="t('archive.period.all')"></option>
+              <option value="month" x-text="t('archive.period.currentMonth')"></option>
+              <option value="previous" x-text="t('archive.period.previousMonth')"></option>
+              <option value="year" x-text="t('archive.period.currentYear')"></option>
             </select>
           </div>
           <div class="receipt-list">
@@ -148,144 +158,187 @@
               <button class="receipt-row" @click="openReceipt(receipt.id)">
                 <span class="receipt-mark" :style="`--mark:${categoryColor(receipt.categoryId)}`"></span>
                 <span class="receipt-copy">
-                  <strong x-text="receipt.merchantNormalized || receipt.merchantRaw || 'Scontrino senza esercente'"></strong>
+                  <strong x-text="receipt.merchantNormalized || receipt.merchantRaw || t('archive.unknownMerchant')"></strong>
                   <small><span x-text="date(receipt.transactionDate || receipt.capturedAt)"></span> · <span x-text="categoryLabel(receipt.categoryId)"></span></small>
                 </span>
                 <span class="receipt-value"><strong x-text="receipt.totalMinor === null ? '—' : money(receipt.totalMinor, receipt.currency)"></strong><small :class="`status ${receipt.status}`" x-text="statusLabel(receipt.status)"></small></span>
               </button>
             </template>
             <article class="empty-state" x-show="!filteredReceipts.length">
-              <h2>Nessuno scontrino</h2>
-              <p>Fotografa il primo scontrino oppure inserisci una spesa manualmente.</p>
-              <button @click="view = 'capture'">Acquisisci</button>
+              <h2 x-text="t('archive.empty.title')"></h2>
+              <p x-text="t('archive.empty.description')"></p>
+              <button @click="view = 'capture'" x-text="t('archive.empty.capture')"></button>
             </article>
           </div>
         </section>
 
         <section x-show="!loading && view === 'capture'" aria-labelledby="capture-title">
-          <div class="section-heading"><div><p class="eyebrow">Salvataggio locale immediato</p><h1 id="capture-title">Nuovo scontrino</h1></div></div>
+          <div class="section-heading"><div><p class="eyebrow" x-text="t('capture.eyebrow')"></p><h1 id="capture-title" x-text="t('capture.title')"></h1></div></div>
           <article class="capture-card">
             <div x-show="!capture.previewUrl" class="capture-options">
               <div class="capture-icon" aria-hidden="true">▣</div>
-              <h2>Inquadra tutto lo scontrino</h2>
-              <p>Correggiamo orientamento e dimensioni, poi conserviamo una copia JPEG sotto 2200 px.</p>
-              <label for="camera-input" role="button">Apri fotocamera</label>
+              <h2 x-text="t('capture.frameTitle')"></h2>
+              <p x-text="t('capture.frameDescription')"></p>
+              <label for="camera-input" role="button" x-text="t('capture.openCamera')"></label>
               <input id="camera-input" type="file" accept="image/*" capture="environment" hidden @change="previewFile($event)" />
-              <label for="gallery-input" role="button" class="secondary outline">Scegli dalla galleria</label>
+              <label for="gallery-input" role="button" class="secondary outline" x-text="t('capture.chooseGallery')"></label>
               <input id="gallery-input" type="file" accept="image/*" hidden @change="previewFile($event)" />
-              <button class="contrast outline" @click="newManual">Inserisci senza foto</button>
+              <button class="contrast outline" @click="newManual" x-text="t('capture.manual')"></button>
             </div>
             <div x-show="capture.previewUrl" class="capture-preview">
-              <img :src="capture.previewUrl" alt="Anteprima dello scontrino" />
+              <img :src="capture.previewUrl" :alt="t('capture.previewAlt')" />
               <div class="button-row">
-                <button class="secondary outline" @click="resetCapture">Ripeti</button>
-                <button @click="saveCapture" :aria-busy="capture.processing" :disabled="capture.processing">Salva sul dispositivo</button>
+                <button class="secondary outline" @click="resetCapture" x-text="t('capture.retry')"></button>
+                <button @click="saveCapture" :aria-busy="capture.processing" :disabled="capture.processing" x-text="t('capture.save')"></button>
               </div>
             </div>
           </article>
-          <p class="privacy-note">La foto resta nel database locale. Viene inviata al backend soltanto se configuri e abiliti i servizi relativi.</p>
-        </section>
-
-        <section x-show="!loading && view === 'settings'" aria-labelledby="settings-title">
-          <div class="section-heading"><div><p class="eyebrow">Locale per impostazione predefinita</p><h1 id="settings-title">Impostazioni</h1></div></div>
-          <div class="settings-grid">
-            <article>
-              <h2>Sincronizzazione</h2>
-              <label><input type="checkbox" role="switch" x-model="settingsForm.syncEnabled" /> Abilita backend e backup remoto</label>
-              <label>Token segreto<input type="password" autocomplete="off" x-model="settingsForm.syncToken" placeholder="Bearer token" /></label>
-              <p class="muted">Il token rimane solo in RxDB su questo dispositivo e non viene replicato.</p>
-              <button @click="saveSettings" :aria-busy="busy">Salva e collega</button>
-            </article>
-            <article>
-              <div class="card-heading"><h2>Intelligenza artificiale</h2><button class="outline compact" @click="refreshProviders" :disabled="!settingsForm.syncToken">Verifica</button></div>
-              <label>Provider
-                <select x-model="settingsForm.selectedAiProvider">
-                  <option value="">Nessuno</option>
-                  <template x-for="provider in providers" :key="provider.id">
-                    <option
-                      :value="provider.id"
-                      :disabled="!provider.configured"
-                      x-text="`${provider.label} · ${provider.model || 'nessun modello'} · ${!provider.configured ? 'non configurato' : provider.available ? 'disponibile' : 'non raggiungibile'}`"
-                    ></option>
-                  </template>
-                </select>
-              </label>
-              <p class="muted">Le chiavi cloud non entrano mai nel browser. La disponibilità AI non condiziona il funzionamento dell’app.</p>
-            </article>
-            <article>
-              <h2>Insight</h2>
-              <label>Soglia minima percentuale<input type="number" min="0" step="1" x-model.number="settingsForm.insightMinimumPercent" /></label>
-              <label>Soglia minima assoluta (€)<input type="number" min="0" step="1" x-model.number="settingsForm.insightMinimumEuro" /></label>
-              <button class="secondary" @click="saveSettings">Applica soglie</button>
-            </article>
-            <article>
-              <h2>Backup locale</h2>
-              <label><input type="checkbox" role="switch" x-model="includeImagesInBackup" /> Includi immagini nel JSON</label>
-              <button class="secondary" @click="exportBackup" :aria-busy="busy">Esporta JSON</button>
-              <p class="muted">Spazio stimato: <span x-text="storageUsage"></span></p>
-            </article>
-            <article class="danger-zone">
-              <h2>Privacy e dati</h2>
-              <p>Elimina ricevute, immagini, job e impostazioni soltanto da questo dispositivo.</p>
-              <button class="outline danger" @click="wipeLocalData">Elimina tutti i dati locali</button>
-            </article>
-            <article>
-              <h2>Installazione</h2>
-              <p>Installa Bianco per aprirlo a schermo intero e usare l’app shell senza rete.</p>
-              <button class="outline" @click="installApp" :disabled="!installPrompt">Installa PWA</button>
-            </article>
-          </div>
+          <p class="privacy-note" x-text="t('capture.privacyNote')"></p>
         </section>
       </main>
 
-      <nav class="bottom-nav" aria-label="Navigazione principale">
-        <button :class="{ active: view === 'dashboard' }" @click="view = 'dashboard'"><span aria-hidden="true">◫</span>Panoramica</button>
-        <button :class="{ active: view === 'archive' }" @click="view = 'archive'"><span aria-hidden="true">≡</span>Archivio</button>
-        <button class="capture-nav" :class="{ active: view === 'capture' }" @click="view = 'capture'"><span aria-hidden="true">＋</span>Acquisisci</button>
-        <button :class="{ active: view === 'settings' }" @click="view = 'settings'"><span aria-hidden="true">⚙</span>Impostazioni</button>
+      <nav class="bottom-nav" :aria-label="t('nav.mainAria')">
+        <button :class="{ active: view === 'dashboard' }" @click="view = 'dashboard'"><span class="bottom-nav-icon" aria-hidden="true">◫</span><span class="bottom-nav-label" x-text="t('nav.dashboard')"></span></button>
+        <button class="capture-nav" :class="{ active: view === 'capture' }" @click="view = 'capture'"><span class="bottom-nav-icon" aria-hidden="true">＋</span><span class="bottom-nav-label" x-text="t('nav.capture')"></span></button>
+        <button :class="{ active: view === 'archive' }" @click="view = 'archive'"><span class="bottom-nav-icon" aria-hidden="true">≡</span><span class="bottom-nav-label" x-text="t('nav.archive')"></span></button>
       </nav>
 
-      <div class="modal-backdrop" x-show="detail.open" x-transition.opacity @click.self="closeDetail">
+      <dialog id="settings-dialog" x-ref="settingsDialog" class="settings-dialog" aria-labelledby="settings-title" @close="onSettingsClosed">
+        <article class="settings-dialog-shell">
+          <header class="settings-dialog-header">
+            <div>
+              <p class="eyebrow" x-text="t('settings.eyebrow')"></p>
+              <h2 id="settings-title" x-ref="settingsTitle" tabindex="-1" x-text="t('settings.title')"></h2>
+            </div>
+            <button class="close-button" :aria-label="t('settings.closeAria')" @click="closeSettings">×</button>
+          </header>
+
+          <div class="settings-grid">
+            <article>
+              <h3 x-text="t('settings.appearance.title')"></h3>
+              <label><span x-text="t('settings.appearance.themeLabel')"></span>
+                <select x-model="themePreference" @change="updateThemePreference($event.target.value)">
+                  <option value="auto" x-text="t('settings.appearance.themeAuto')"></option>
+                  <option value="light" x-text="t('settings.appearance.themeLight')"></option>
+                  <option value="dark" x-text="t('settings.appearance.themeDark')"></option>
+                </select>
+              </label>
+              <label><span x-text="t('settings.appearance.languageLabel')"></span>
+                <select x-model="languagePreference" @change="updateLanguagePreference($event.target.value)">
+                  <option value="auto" x-text="t('settings.appearance.languageAuto')"></option>
+                  <option value="en" x-text="t('settings.appearance.languageEn')"></option>
+                  <option value="it" x-text="t('settings.appearance.languageIt')"></option>
+                  <option value="de" x-text="t('settings.appearance.languageDe')"></option>
+                  <option value="es" x-text="t('settings.appearance.languageEs')"></option>
+                  <option value="fr" x-text="t('settings.appearance.languageFr')"></option>
+                </select>
+              </label>
+            </article>
+
+            <article>
+              <h3 x-text="t('settings.ai.title')"></h3>
+              <p class="muted" x-show="!providers.length" x-text="t('settings.ai.unavailableOffline')"></p>
+              <div x-show="providers.length">
+                <label><span x-text="t('settings.ai.provider')"></span>
+                  <select x-model="providerForm.id" @change="editProvider($event.target.value)">
+                    <template x-for="provider in providers" :key="`config-${provider.id}`">
+                      <option :value="provider.id" x-text="providerLabel(provider)"></option>
+                    </template>
+                  </select>
+                </label>
+                <label><span x-text="t('settings.ai.endpoint')"></span>
+                  <input type="url" x-model="providerForm.baseUrl" @input.debounce.700ms="validateProviderConnection" :placeholder="providerForm.id === 'ollama' ? 'http://host.containers.internal:11434' : 'https://…'" autocomplete="off" spellcheck="false" />
+                </label>
+                <p class="muted" x-show="providerForm.id === 'ollama'" x-text="t('settings.ai.ollamaEndpointHint')"></p>
+                <label x-show="providerForm.id !== 'ollama'">
+                  <span x-text="editingProvider?.requiresApiKey ? t('settings.ai.apiKey') : t('settings.ai.apiKeyOptional')"></span>
+                  <input type="password" x-model="providerForm.apiKey" @change="validateProviderConnection" autocomplete="new-password" :placeholder="editingProvider?.hasApiKey ? t('settings.ai.savedKeyPlaceholder') : t('settings.ai.newKeyPlaceholder')" />
+                </label>
+                <label x-show="providerForm.id !== 'ollama' && editingProvider?.hasApiKey">
+                  <input type="checkbox" role="switch" x-model="providerForm.clearApiKey" @change="validateProviderConnection" /> <span x-text="t('settings.ai.removeSavedKey')"></span>
+                </label>
+                <label><span x-text="t('settings.ai.model')"></span>
+                  <select x-model="providerForm.model" @change="selectProviderModel($event.target.value)" :disabled="providerBusy || !providerModels.length">
+                    <option value="" x-text="providerBusy ? t('settings.ai.modelSearching') : providerModels.length ? t('settings.ai.modelChoose') : t('settings.ai.modelNone')"></option>
+                    <template x-for="model in providerModels" :key="model"><option :value="model" x-text="model"></option></template>
+                  </select>
+                </label>
+                <p class="muted" role="status" aria-live="polite" :class="providerConnectionState === 'error' ? 'negative' : ''" x-text="providerConnectionMessage"></p>
+                <p class="muted" x-show="activeProvider"><span x-text="t('settings.ai.active')"></span> <strong x-text="`${providerLabel(activeProvider)} · ${activeProvider?.model}`"></strong></p>
+              </div>
+              <p class="muted" x-text="t('settings.ai.securityNote')"></p>
+            </article>
+
+            <article>
+              <h3 x-text="t('settings.insights.title')"></h3>
+              <label><span x-text="t('settings.insights.minimumPercent')"></span><input type="number" min="0" step="1" x-model.number="settingsForm.insightMinimumPercent" /></label>
+              <label><span x-text="t('settings.insights.minimumAmount', { currency: settings.defaultCurrency })"></span><input type="number" min="0" step="1" x-model.number="settingsForm.insightMinimumEuro" /></label>
+              <button class="secondary" @click="saveSettings" x-text="t('settings.insights.apply')"></button>
+            </article>
+
+            <article>
+              <h3 x-text="t('settings.backup.title')"></h3>
+              <label><input type="checkbox" role="switch" x-model="includeImagesInBackup" /> <span x-text="t('settings.backup.includeImages')"></span></label>
+              <button class="secondary" @click="exportBackup" :aria-busy="busy" x-text="t('settings.backup.export')"></button>
+              <p class="muted" x-text="t('settings.backup.estimatedSpace', { usage: storageUsage })"></p>
+            </article>
+
+            <article class="danger-zone">
+              <h3 x-text="t('settings.privacy.title')"></h3>
+              <p x-text="t('settings.privacy.description')"></p>
+              <button class="outline danger" @click="wipeLocalData" x-text="t('settings.privacy.deleteAll')"></button>
+            </article>
+
+            <article>
+              <h3 x-text="t('settings.install.title')"></h3>
+              <p x-text="t('settings.install.description')"></p>
+              <button class="outline" @click="installApp" :disabled="!installPrompt" x-text="t('settings.install.action')"></button>
+            </article>
+          </div>
+          <div class="toast dialog-toast" x-show="toast.message && settingsOpen" x-transition :class="toast.type" x-text="toast.message"></div>
+        </article>
+      </dialog>
+
+      <div class="modal-backdrop" x-show="detail.open" x-transition.opacity @click.self="closeDetail" @keydown.escape.window="if (detail.open) closeDetail()">
         <article class="receipt-detail" role="dialog" aria-modal="true" aria-labelledby="detail-title">
           <header>
-            <div><p class="eyebrow" x-text="statusLabel(detail.form.status)"></p><h2 id="detail-title">Controlla lo scontrino</h2></div>
-            <button class="close-button" aria-label="Chiudi" @click="closeDetail">×</button>
+            <div><p class="eyebrow" x-text="statusLabel(detail.form.status)"></p><h2 id="detail-title" x-text="t('receiptDetail.title')"></h2></div>
+            <button class="close-button" :aria-label="t('receiptDetail.close')" @click="closeDetail">×</button>
           </header>
           <div class="detail-layout">
             <div>
               <button class="image-button" x-show="detail.imageUrl" @click="loadFullImage">
-                <img :src="detail.imageUrl" alt="Fotografia dello scontrino" />
-                <small x-text="detail.fullLoaded ? 'Immagine completa conservata localmente' : 'Apri immagine completa'"></small>
+                <img :src="detail.imageUrl" :alt="t('receiptDetail.photoAlt')" />
+                <small x-text="detail.fullLoaded ? t('receiptDetail.fullImageStored') : t('receiptDetail.openFullImage')"></small>
               </button>
-              <div class="image-placeholder" x-show="!detail.imageUrl">Nessuna immagine locale</div>
-              <button class="secondary outline" x-show="detail.form.status === 'failed'" @click="retryAi">Riprova elaborazione</button>
+              <div class="image-placeholder" x-show="!detail.imageUrl" x-text="t('receiptDetail.noLocalImage')"></div>
+              <button class="secondary outline" x-show="detail.form.status === 'failed'" @click="retryAi" x-text="t('receiptDetail.retryProcessing')"></button>
             </div>
-            <form @submit.prevent="saveDetail(false)">
+            <form @submit.prevent="saveDetail" @input="detail.dirty = true" @change="detail.dirty = true">
               <div class="form-grid">
-                <label class="span-2">Esercente<input x-model="detail.form.merchantNormalized" placeholder="Nome esercente" /></label>
-                <label>Data<input type="date" x-model="detail.form.transactionDate" /></label>
-                <label>Totale (€)<input type="number" min="0" step="0.01" inputmode="decimal" x-model="detail.form.totalEuro" /></label>
-                <label>Categoria<select x-model="detail.form.categoryId"><template x-for="category in categories" :key="category.id"><option :value="category.id" x-text="category.label"></option></template></select></label>
-                <label>Valuta<input maxlength="3" x-model="detail.form.currency" /></label>
+                <label class="span-2"><span x-text="t('receiptDetail.merchant')"></span><input x-model="detail.form.merchantNormalized" :placeholder="t('receiptDetail.merchantPlaceholder')" /></label>
+                <label><span x-text="t('receiptDetail.date')"></span><input type="date" x-model="detail.form.transactionDate" /></label>
+                <label><span x-text="t('receiptDetail.total', { currency: detail.form.currency || settings.defaultCurrency })"></span><input type="number" min="0" step="0.01" inputmode="decimal" x-model="detail.form.totalEuro" /></label>
+                <label><span x-text="t('receiptDetail.category')"></span><select x-model="detail.form.categoryId"><template x-for="category in categories" :key="category.id"><option :value="category.id" x-text="categoryLabel(category.id)"></option></template></select></label>
+                <label><span x-text="t('receiptDetail.currency')"></span><input maxlength="3" x-model="detail.form.currency" /></label>
               </div>
-              <div class="items-heading"><h3>Prodotti</h3><button type="button" class="outline compact" @click="addItem">+ Prodotto</button></div>
+              <div class="items-heading"><h3 x-text="t('receiptDetail.products')"></h3><button type="button" class="outline compact" @click="addItem" x-text="t('receiptDetail.addProduct')"></button></div>
               <div class="item-editor">
                 <template x-for="(item, index) in detail.items" :key="item.id">
                   <fieldset>
-                    <input x-model="item.normalizedName" :aria-label="`Nome prodotto ${index + 1}`" placeholder="Prodotto" />
-                    <input type="number" min="0" step="0.01" x-model="item.quantity" :aria-label="`Quantità ${index + 1}`" placeholder="Qtà" />
-                    <input type="number" min="0" step="0.01" x-model="item.unitPriceEuro" :aria-label="`Prezzo unitario ${index + 1}`" placeholder="€/unità" />
-                    <input type="number" min="0" step="0.01" x-model="item.totalPriceEuro" :aria-label="`Totale prodotto ${index + 1}`" placeholder="Totale €" />
-                    <button type="button" class="close-button" @click="removeItem(index)" :aria-label="`Elimina prodotto ${index + 1}`">×</button>
+                    <input x-model="item.normalizedName" :aria-label="t('receiptDetail.productNameAria', { index: index + 1 })" :placeholder="t('receiptDetail.productPlaceholder')" />
+                    <input type="number" min="0" step="0.01" x-model="item.quantity" :aria-label="t('receiptDetail.quantityAria', { index: index + 1 })" :placeholder="t('receiptDetail.quantityPlaceholder')" />
+                    <input type="number" min="0" step="0.01" x-model="item.unitPriceEuro" :aria-label="t('receiptDetail.unitPriceAria', { index: index + 1 })" :placeholder="t('receiptDetail.unitPricePlaceholder', { currency: detail.form.currency || settings.defaultCurrency })" />
+                    <input type="number" min="0" step="0.01" x-model="item.totalPriceEuro" :aria-label="t('receiptDetail.productTotalAria', { index: index + 1 })" :placeholder="t('receiptDetail.productTotalPlaceholder', { currency: detail.form.currency || settings.defaultCurrency })" />
+                    <button type="button" class="close-button" @click="removeItem(index)" :aria-label="t('receiptDetail.deleteProductAria', { index: index + 1 })">×</button>
                   </fieldset>
                 </template>
-                <p class="empty-copy" x-show="!detail.items.length">Nessun prodotto. Puoi aggiungerli manualmente.</p>
+                <p class="empty-copy" x-show="!detail.items.length" x-text="t('receiptDetail.noProducts')"></p>
               </div>
               <div class="detail-actions">
-                <button type="button" class="outline danger" @click="removeCurrentReceipt">Elimina</button>
+                <button type="button" class="outline danger" @click="removeCurrentReceipt" x-text="t('receiptDetail.delete')"></button>
                 <span class="spacer"></span>
-                <button type="submit" class="secondary" :aria-busy="busy">Salva</button>
-                <button type="button" @click="saveDetail(true)" :aria-busy="busy">Conferma</button>
+                <button type="submit" :aria-busy="busy" :disabled="busy" x-text="t('receiptDetail.save')"></button>
               </div>
             </form>
           </div>
@@ -293,9 +346,9 @@
       </div>
 
       <div class="update-banner" x-show="updateAvailable">
-        <span>È disponibile una nuova versione.</span><button class="compact" @click="applyUpdate">Aggiorna</button>
+        <span x-text="t('pwa.updateAvailable')"></span><button class="compact" @click="applyUpdate" x-text="t('pwa.update')"></button>
       </div>
-      <div class="toast" x-show="toast.message" x-transition :class="toast.type" x-text="toast.message"></div>
+      <div class="toast" x-show="toast.message && !settingsOpen" x-transition :class="toast.type" x-text="toast.message"></div>
     </div>
     <script type="module" src="/src/main.js"></script>
   </body>

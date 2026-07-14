@@ -11,7 +11,8 @@ Locale: {locale}. Valuta predefinita: {currency}."""
 
 INSIGHT_PROMPT = """Genera al massimo tre osservazioni e un suggerimento usando soltanto i dati
 aggregati forniti. Non inventare dati, non fare previsioni e non offrire consulenza fiscale o
-d'investimento. Restituisci esclusivamente JSON conforme allo schema."""
+d'investimento. Scrivi nella lingua indicata dal locale {locale}. Restituisci esclusivamente JSON
+conforme allo schema."""
 
 
 def schema_for(model: type[BaseModel]) -> dict[str, Any]:

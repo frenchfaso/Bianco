@@ -38,10 +38,10 @@ async function createDatabase() {
   if (!existingSettings) {
     await db.settings.insert({
       id: 'singleton',
-      locale: 'it-IT',
+      locale: 'en-GB',
+      languagePreference: 'auto',
+      themePreference: 'auto',
       defaultCurrency: 'EUR',
-      syncEnabled: false,
-      syncToken: null,
       selectedAiProvider: null,
       insightMinimumPercent: 20,
       insightMinimumMinor: 1000,

@@ -2,9 +2,14 @@ from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse
+from sqlalchemy.orm import Session
 
 from app.config import Settings, get_settings
+from app.database import get_session
+from app.repositories.ai_jobs import enqueue_extraction, job_entry
+from app.schemas.ai import SupportedLocale
 from app.security import require_token
+from app.services.ai_queue import wake_ai_worker
 from app.services.files import InvalidImage, file_path, store_image, validate_image
 
 router = APIRouter(
@@ -17,11 +22,20 @@ async def upload_file(
     file: Annotated[UploadFile, File()],
     sha256: Annotated[str, Form()],
     mime_type: Annotated[str, Form(alias="mimeType")],
-    receipt_id: Annotated[str, Form(alias="receiptId")],
+    receipt_id: Annotated[
+        str,
+        Form(
+            alias="receiptId",
+            min_length=1,
+            max_length=64,
+            pattern=r"^[A-Za-z0-9_-]+$",
+        ),
+    ],
     settings: Annotated[Settings, Depends(get_settings)],
-) -> dict[str, str | bool]:
-    if not receipt_id.strip():
-        raise HTTPException(status_code=422, detail="receiptId is required")
+    session: Annotated[Session, Depends(get_session)],
+    locale: Annotated[SupportedLocale, Form()] = "en-GB",
+    currency: Annotated[str, Form(pattern=r"^[A-Za-z]{3}$")] = "EUR",
+) -> dict[str, object]:
     payload = await file.read(settings.max_upload_bytes + 1)
     if len(payload) > settings.max_upload_bytes:
         raise HTTPException(status_code=413, detail="File is too large")
@@ -32,7 +46,20 @@ async def upload_file(
         existed = store_image(settings.files_dir, file_id, payload)
     except InvalidImage as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
-    return {"fileId": file_id, "alreadyExisted": existed}
+    job = enqueue_extraction(
+        session,
+        settings,
+        receipt_id=receipt_id,
+        image_hash=file_id,
+        locale=locale,
+        currency=currency.upper(),
+    )
+    wake_ai_worker()
+    return {
+        "fileId": file_id,
+        "alreadyExisted": existed,
+        "aiJob": job_entry(job),
+    }
 
 
 @router.get("/{file_id}")

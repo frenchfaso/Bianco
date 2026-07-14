@@ -8,6 +8,11 @@ export default defineConfig({
   use: {
     baseURL: process.env.PLAYWRIGHT_BASE_URL || 'http://localhost',
     browserName: 'chromium',
+    locale: 'it-IT',
+    httpCredentials: {
+      username: process.env.BIANCO_TEST_AUTH_USER || 'test-user',
+      password: process.env.BIANCO_TEST_AUTH_PASSWORD || 'test-password'
+    },
     ignoreHTTPSErrors: true,
     trace: 'retain-on-failure'
   },

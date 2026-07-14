@@ -1,13 +1,16 @@
+import asyncio
 import json
 import logging
 import time
 import uuid
 from contextlib import asynccontextmanager
+from contextlib import suppress
 
 from fastapi import FastAPI, Request
 
 from app.config import get_settings
 from app.routes import ai, files, health, sync
+from app.services.ai_queue import run_ai_worker
 
 logger = logging.getLogger("bianco")
 handler = logging.StreamHandler()
@@ -22,7 +25,16 @@ async def lifespan(_app: FastAPI):
     settings = get_settings()
     settings.data_dir.mkdir(parents=True, exist_ok=True)
     settings.files_dir.mkdir(parents=True, exist_ok=True)
-    yield
+    worker = None
+    if settings.ai_worker_enabled:
+        worker = asyncio.create_task(run_ai_worker(settings), name="bianco-ai-worker")
+    try:
+        yield
+    finally:
+        if worker is not None:
+            worker.cancel()
+            with suppress(asyncio.CancelledError):
+                await worker
 
 
 app = FastAPI(

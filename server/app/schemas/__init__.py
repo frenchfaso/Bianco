@@ -1,4 +1,9 @@
-from app.schemas.ai import GeneratedInsights, InsightSnapshot, ReceiptExtraction
+from app.schemas.ai import (
+    GeneratedInsights,
+    InsightSnapshot,
+    ProviderConfigurationUpdate,
+    ReceiptExtraction,
+)
 from app.schemas.sync import PullRequest, PullResponse, PushRequest, PushResponse
 
 __all__ = [
@@ -6,6 +11,7 @@ __all__ = [
     "InsightSnapshot",
     "PullRequest",
     "PullResponse",
+    "ProviderConfigurationUpdate",
     "PushRequest",
     "PushResponse",
     "ReceiptExtraction",

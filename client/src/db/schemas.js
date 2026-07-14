@@ -107,13 +107,13 @@ export const imageSchema = {
 
 export const jobSchema = {
   title: 'local job',
-  version: 1,
+  version: 2,
   primaryKey: 'id',
   type: 'object',
   additionalProperties: false,
   properties: {
     id: { type: 'string', maxLength: 64 },
-    type: { type: 'string', enum: ['ai-extraction', 'image-upload', 'image-download', 'ai-insight'] },
+    type: { type: 'string', enum: ['image-upload', 'image-download', 'ai-insight'] },
     receiptId: nullableString,
     status: { type: 'string', enum: ['pending', 'processing', 'completed', 'failed'] },
     attempts: { type: 'integer', minimum: 0 },
@@ -132,23 +132,23 @@ export const jobSchema = {
 
 export const settingSchema = {
   title: 'local settings',
-  version: 1,
+  version: 4,
   primaryKey: 'id',
   type: 'object',
   additionalProperties: false,
   properties: {
     id: { type: 'string', maxLength: 20 },
     locale: { type: 'string' },
+    languagePreference: { type: 'string', enum: ['auto', 'en', 'it', 'de', 'es', 'fr'] },
+    themePreference: { type: 'string', enum: ['auto', 'light', 'dark'] },
     defaultCurrency: { type: 'string', minLength: 3, maxLength: 3 },
-    syncEnabled: { type: 'boolean' },
-    syncToken: nullableString,
     selectedAiProvider: nullableString,
     insightMinimumPercent: { type: 'number', minimum: 0 },
     insightMinimumMinor: { type: 'integer', minimum: 0 },
     aiSummary: { type: ['object', 'null'] }
   },
   required: [
-    'id', 'locale', 'defaultCurrency', 'syncEnabled', 'syncToken', 'selectedAiProvider',
+    'id', 'locale', 'languagePreference', 'themePreference', 'defaultCurrency', 'selectedAiProvider',
     'insightMinimumPercent', 'insightMinimumMinor', 'aiSummary'
   ]
 }
@@ -172,12 +172,31 @@ export const auditEventSchema = {
 }
 
 const migrate = (document) => document
+const migrateSettingsV2 = (document) => {
+  const migrated = { ...document }
+  delete migrated.syncEnabled
+  return migrated
+}
+const migrateSettingsV3 = (document) => {
+  const migrated = { ...document }
+  delete migrated.syncToken
+  return migrated
+}
+const migrateSettingsV4 = (document) => ({
+  ...document,
+  languagePreference: 'auto',
+  themePreference: 'auto'
+})
+const migrateJobV2 = (document) => document.type === 'ai-extraction' ? null : document
 
 export const collections = {
   receipts: { schema: receiptSchema, migrationStrategies: { 1: migrate } },
   receipt_items: { schema: receiptItemSchema, migrationStrategies: { 1: migrate } },
   images: { schema: imageSchema, migrationStrategies: { 1: migrate } },
-  jobs: { schema: jobSchema, migrationStrategies: { 1: migrate } },
-  settings: { schema: settingSchema, migrationStrategies: { 1: migrate } },
+  jobs: { schema: jobSchema, migrationStrategies: { 1: migrate, 2: migrateJobV2 } },
+  settings: {
+    schema: settingSchema,
+    migrationStrategies: { 1: migrate, 2: migrateSettingsV2, 3: migrateSettingsV3, 4: migrateSettingsV4 }
+  },
   audit_events: { schema: auditEventSchema, migrationStrategies: { 1: migrate } }
 }

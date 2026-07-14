@@ -18,4 +18,6 @@ def test_sqlite_backup_is_consistent(tmp_path):
     assert destination.is_file()
     with sqlite3.connect(destination) as connection:
         assert connection.execute("PRAGMA integrity_check").fetchone() == ("ok",)
-        assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == ("0001_initial",)
+        assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == (
+            "0003_backend_ai_queue",
+        )

@@ -10,12 +10,12 @@ export default defineConfig({
       manifest: {
         name: 'Bianco',
         short_name: 'Bianco',
-        description: 'Scontrini chiari, anche offline.',
+        description: 'Clear receipts, even offline.',
         display: 'standalone',
         start_url: '/',
         scope: '/',
-        theme_color: '#ffffff',
-        background_color: '#ffffff',
+        theme_color: '#173f37',
+        background_color: '#173f37',
         icons: [
           {
             src: '/icon.svg',
@@ -47,7 +47,10 @@ export default defineConfig({
     proxy: {
       '/api': {
         target: process.env.VITE_API_PROXY_TARGET || 'http://api:8000',
-        changeOrigin: true
+        changeOrigin: true,
+        headers: {
+          Authorization: `Bearer ${process.env.BIANCO_SYNC_TOKEN || 'development-token'}`
+        }
       }
     }
   },

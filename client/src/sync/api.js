@@ -1,6 +1,5 @@
-export async function apiFetch(path, token, options = {}) {
+export async function apiFetch(path, options = {}) {
   const headers = new Headers(options.headers || {})
-  if (token) headers.set('Authorization', `Bearer ${token}`)
   const response = await fetch(path, { ...options, headers, cache: 'no-store' })
   if (!response.ok) {
     const problem = await response.json().catch(() => ({}))

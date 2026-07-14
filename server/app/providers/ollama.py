@@ -1,4 +1,5 @@
 import base64
+import json
 
 import httpx
 
@@ -28,15 +29,23 @@ class OllamaProvider:
     def configured(self) -> bool:
         return bool(self.base_url and self.model)
 
+    async def list_models(self) -> list[str]:
+        if not self.base_url:
+            return []
+        async with httpx.AsyncClient(timeout=10) as client:
+            response = await client.get(f"{self.base_url}/api/tags")
+        response.raise_for_status()
+        return sorted(
+            entry["name"]
+            for entry in response.json().get("models", [])
+            if isinstance(entry, dict) and isinstance(entry.get("name"), str)
+        )
+
     async def health_check(self) -> bool:
         if not self.configured:
             return False
         try:
-            async with httpx.AsyncClient(timeout=5) as client:
-                response = await client.get(f"{self.base_url}/api/tags")
-            if not response.is_success:
-                return False
-            names = {entry.get("name") for entry in response.json().get("models", [])}
+            names = set(await self.list_models())
             return self.model in names or any(
                 name and name.split(":")[0] == self.model for name in names
             )
@@ -44,20 +53,32 @@ class OllamaProvider:
             return False
 
     async def _chat(self, prompt: str, output_model, images: list[str] | None = None):
-        message = {"role": "user", "content": prompt}
+        output_schema = schema_for(output_model)
+        grounded_prompt = (
+            f"{prompt}\n\nSchema JSON obbligatorio:\n"
+            f"{json.dumps(output_schema, ensure_ascii=False, separators=(',', ':'))}"
+        )
+        message = {"role": "user", "content": grounded_prompt}
         if images:
             message["images"] = images
         payload = {
             "model": self.model,
             "messages": [message],
             "stream": False,
-            "format": schema_for(output_model),
-            "options": {"temperature": 0},
+            "think": False,
+            "format": output_schema,
+            "options": {"temperature": 0, "num_ctx": 8192, "num_predict": 2048},
         }
         async with httpx.AsyncClient(timeout=180) as client:
             response = await client.post(f"{self.base_url}/api/chat", json=payload)
+            if response.status_code == 400 and "failed to parse grammar" in response.text.lower():
+                fallback_payload = {key: value for key, value in payload.items() if key != "format"}
+                response = await client.post(f"{self.base_url}/api/chat", json=fallback_payload)
         response.raise_for_status()
-        content = response.json()["message"]["content"]
+        body = response.json()
+        content = body["message"]["content"]
+        if body.get("done_reason") == "length" or not content.strip():
+            raise ValueError("Ollama returned an incomplete structured response")
         return output_model.model_validate(parse_json_content(content))
 
     async def extract_receipt(
@@ -71,5 +92,8 @@ class OllamaProvider:
     async def generate_insights(
         self, snapshot: InsightSnapshot
     ) -> GeneratedInsights:
-        prompt = f"{INSIGHT_PROMPT}\n\nDati aggregati:\n{snapshot.model_dump_json()}"
+        prompt = (
+            f"{INSIGHT_PROMPT.format(locale=snapshot.locale)}\n\n"
+            f"Dati aggregati:\n{snapshot.model_dump_json()}"
+        )
         return await self._chat(prompt, GeneratedInsights)

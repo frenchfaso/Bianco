@@ -20,6 +20,51 @@ def _canonical(document: dict[str, Any]) -> str:
     return json.dumps(document, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
 
 
+def read_document(
+    session: Session, collection: str, document_id: str
+) -> dict[str, Any] | None:
+    row = session.get(SyncDocument, (OWNER_ID, collection, document_id))
+    return json.loads(row.document_json) if row else None
+
+
+def write_server_document(
+    session: Session,
+    collection: str,
+    document: dict[str, Any],
+    *,
+    timestamp: str | None = None,
+) -> None:
+    if collection not in REPLICATED_COLLECTIONS:
+        raise ValueError("Unknown replicated collection")
+    document_id = document.get("id")
+    if not isinstance(document_id, str) or not document_id:
+        raise ValueError("Every replicated document must contain a non-empty id")
+    now = timestamp or utc_now()
+    sequence = SyncSequence(created_at=now)
+    session.add(sequence)
+    session.flush()
+    row = session.get(SyncDocument, (OWNER_ID, collection, document_id))
+    canonical = _canonical(document)
+    if row is None:
+        session.add(
+            SyncDocument(
+                owner_id=OWNER_ID,
+                collection_name=collection,
+                document_id=document_id,
+                document_json=canonical,
+                server_sequence=sequence.sequence,
+                is_deleted=bool(document.get("_deleted", False)),
+                created_at=now,
+                updated_at=now,
+            )
+        )
+        return
+    row.document_json = canonical
+    row.server_sequence = sequence.sequence
+    row.is_deleted = bool(document.get("_deleted", False))
+    row.updated_at = now
+
+
 def pull_documents(
     session: Session, collection: str, request: PullRequest
 ) -> PullResponse:

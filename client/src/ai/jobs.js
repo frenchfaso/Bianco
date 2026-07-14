@@ -1,5 +1,3 @@
-import { receiptExtractionSchema } from './schemas.js'
-import { applyExtraction } from '../stores/receipts.js'
 import { getImageBlob, storeRemoteImage } from '../images/repository.js'
 import { apiFetch } from '../sync/api.js'
 import { nowIso } from '../utils/ids.js'
@@ -15,36 +13,11 @@ function isAvailabilityError(error) {
   return error instanceof TypeError || ['429', '502', '503', '504'].includes(error.code)
 }
 
-async function processExtraction(db, job, settings, providers) {
-  if (!settings.syncToken || !settings.selectedAiProvider) return false
-  const receipt = await db.receipts.findOne(job.receiptId).exec()
-  if (!receipt?.imageHash) throw new Error('Receipt image is missing')
-  const image = await getImageBlob(db, receipt.imageHash, 'full')
-  if (!image) throw new Error('Full receipt image is unavailable')
-  await receipt.incrementalPatch({ status: 'processing', updatedAt: nowIso() })
-
-  const form = new FormData()
-  form.append('image', image, 'receipt.jpg')
-  form.append('providerId', settings.selectedAiProvider)
-  form.append('currency', receipt.currency || settings.defaultCurrency)
-  form.append('locale', settings.locale)
-  const response = await apiFetch('/api/ai/receipts/extract', settings.syncToken, {
-    method: 'POST',
-    body: form
-  })
-  const extraction = receiptExtractionSchema.parse(await response.json())
-  const provider = providers.find((entry) => entry.id === settings.selectedAiProvider)
-  await applyExtraction(db, job.receiptId, extraction, {
-    id: settings.selectedAiProvider,
-    model: provider?.model || null
-  })
-  return true
-}
-
 async function processUpload(db, job, settings) {
-  if (!settings.syncEnabled || !settings.syncToken) return false
   const image = await db.images.findOne({ selector: { receiptId: job.receiptId } }).exec()
   if (!image) throw new Error('Image metadata is missing')
+  const receipt = await db.receipts.findOne(job.receiptId).exec()
+  if (!receipt) throw new Error('Receipt metadata is missing')
   const blob = await getImageBlob(db, image.id, 'full')
   if (!blob) throw new Error('Full image attachment is missing')
   await image.incrementalPatch({ remoteStatus: 'uploading' })
@@ -53,7 +26,9 @@ async function processUpload(db, job, settings) {
   form.append('sha256', image.id)
   form.append('mimeType', image.mimeType)
   form.append('receiptId', job.receiptId)
-  const response = await apiFetch('/api/files', settings.syncToken, {
+  form.append('locale', settings.locale)
+  form.append('currency', receipt.currency || settings.defaultCurrency)
+  const response = await apiFetch('/api/files', {
     method: 'POST',
     body: form
   })
@@ -62,8 +37,7 @@ async function processUpload(db, job, settings) {
   return true
 }
 
-async function processJob(db, job, settings, providers) {
-  if (job.type === 'ai-extraction') return processExtraction(db, job, settings, providers)
+async function processJob(db, job, settings) {
   if (job.type === 'image-upload') return processUpload(db, job, settings)
   return false
 }
@@ -77,7 +51,7 @@ export async function recoverInterruptedJobs(db) {
   })))
 }
 
-export async function runPendingJobs(db, settings, onEvent = () => {}, providers = []) {
+export async function runPendingJobs(db, settings, onEvent = () => {}) {
   if (running || !navigator.onLine) return
   running = true
   try {
@@ -90,7 +64,7 @@ export async function runPendingJobs(db, settings, onEvent = () => {}, providers
     for (const job of eligible) {
       await job.incrementalPatch({ status: 'processing', updatedAt: nowIso() })
       try {
-        const processed = await processJob(db, job, settings, providers)
+        const processed = await processJob(db, job, settings)
         if (!processed) {
           await job.incrementalPatch({ status: 'pending', updatedAt: nowIso() })
           continue
@@ -102,7 +76,7 @@ export async function runPendingJobs(db, settings, onEvent = () => {}, providers
           lastErrorMessage: null,
           updatedAt: nowIso()
         })
-        onEvent({ type: 'job-completed', jobType: job.type, receiptId: job.receiptId })
+        await onEvent({ type: 'job-completed', jobType: job.type, receiptId: job.receiptId })
       } catch (error) {
         const attempts = job.attempts + 1
         const availabilityError = isAvailabilityError(error)
@@ -115,15 +89,11 @@ export async function runPendingJobs(db, settings, onEvent = () => {}, providers
           lastErrorMessage: String(error.message || error).slice(0, 300),
           updatedAt: nowIso()
         })
-        if (job.type === 'ai-extraction') {
-          const receipt = await db.receipts.findOne(job.receiptId).exec()
-          await receipt?.incrementalPatch({ status: terminal ? 'failed' : 'queued', updatedAt: nowIso() })
-        }
         if (job.type === 'image-upload') {
           const image = await db.images.findOne({ selector: { receiptId: job.receiptId } }).exec()
           await image?.incrementalPatch({ remoteStatus: terminal ? 'failed' : 'pending' })
         }
-        onEvent({ type: 'job-failed', jobType: job.type, receiptId: job.receiptId, error })
+        await onEvent({ type: 'job-failed', jobType: job.type, receiptId: job.receiptId, error })
       }
     }
   } finally {
@@ -131,21 +101,9 @@ export async function runPendingJobs(db, settings, onEvent = () => {}, providers
   }
 }
 
-export async function retryReceiptJobs(db, receiptId) {
-  const jobs = await db.jobs.find({ selector: { receiptId } }).exec()
-  await Promise.all(jobs.filter((job) => job.status !== 'completed').map((job) => job.incrementalPatch({
-    status: 'pending',
-    attempts: 0,
-    nextAttemptAt: null,
-    lastErrorCode: null,
-    lastErrorMessage: null,
-    updatedAt: nowIso()
-  })))
-}
-
-export async function downloadRemoteImage(db, receipt, token, variant = 'thumbnail') {
-  if (!receipt.imageHash || !token) return null
-  const response = await apiFetch(`/api/files/${receipt.imageHash}?variant=${variant}`, token)
+export async function downloadRemoteImage(db, receipt, variant = 'thumbnail') {
+  if (!receipt.imageHash) return null
+  const response = await apiFetch(`/api/files/${receipt.imageHash}?variant=${variant}`)
   const blob = await response.blob()
   await storeRemoteImage(db, receipt.id, receipt.imageHash, blob, variant)
   return blob

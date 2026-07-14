@@ -21,10 +21,10 @@ async function parseSse(response, onResync, signal) {
   }
 }
 
-async function connectEvents(token, stream, controller) {
+async function connectEvents(stream, controller) {
   while (!controller.signal.aborted) {
     try {
-      const response = await apiFetch('/api/sync/events', token, { signal: controller.signal })
+      const response = await apiFetch('/api/sync/events', { signal: controller.signal })
       await parseSse(response, () => stream.next('RESYNC'), controller.signal)
     } catch (error) {
       if (controller.signal.aborted) return
@@ -34,7 +34,7 @@ async function connectEvents(token, stream, controller) {
   }
 }
 
-function replicateCollection(collection, collectionName, token, stream) {
+function replicateCollection(collection, collectionName, stream) {
   return replicateRxCollection({
     collection,
     replicationIdentifier: `bianco-http-${collectionName}-v1`,
@@ -45,7 +45,7 @@ function replicateCollection(collection, collectionName, token, stream) {
       batchSize: 100,
       stream$: stream.asObservable(),
       async handler(checkpoint, batchSize) {
-        const response = await apiFetch(`/api/sync/${collectionName}/pull`, token, {
+        const response = await apiFetch(`/api/sync/${collectionName}/pull`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ checkpoint: checkpoint || { sequence: 0 }, batchSize })
@@ -56,7 +56,7 @@ function replicateCollection(collection, collectionName, token, stream) {
     push: {
       batchSize: 100,
       async handler(rows) {
-        const response = await apiFetch(`/api/sync/${collectionName}/push`, token, {
+        const response = await apiFetch(`/api/sync/${collectionName}/push`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ rows })
@@ -67,17 +67,13 @@ function replicateCollection(collection, collectionName, token, stream) {
   })
 }
 
-export async function startReplication(db, settings, onStatus = () => {}) {
+export async function startReplication(db, onStatus = () => {}) {
   await stopReplication()
-  if (!settings.syncEnabled || !settings.syncToken) {
-    onStatus('disabled')
-    return null
-  }
   const stream = new Subject()
   const controller = new AbortController()
   const states = [
-    replicateCollection(db.receipts, 'receipts', settings.syncToken, stream),
-    replicateCollection(db.receipt_items, 'receipt_items', settings.syncToken, stream)
+    replicateCollection(db.receipts, 'receipts', stream),
+    replicateCollection(db.receipt_items, 'receipt_items', stream)
   ]
   states.forEach((state) => {
     state.error$.subscribe((error) => {
@@ -87,7 +83,7 @@ export async function startReplication(db, settings, onStatus = () => {}) {
     state.active$.subscribe((isActive) => onStatus(isActive ? 'syncing' : 'idle'))
   })
   active = { states, stream, controller }
-  void connectEvents(settings.syncToken, stream, controller)
+  void connectEvents(stream, controller)
   onStatus('syncing')
   return active
 }

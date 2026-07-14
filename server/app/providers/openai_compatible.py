@@ -17,28 +17,52 @@ from app.schemas.ai import (
 
 
 class OpenAICompatibleProvider:
-    id = "openai-compatible"
-    label = "OpenAI-compatible"
-
-    def __init__(self, base_url: str, api_key: str, model: str) -> None:
+    def __init__(
+        self,
+        base_url: str,
+        api_key: str,
+        model: str,
+        *,
+        provider_id: str = "openai-compatible",
+        label: str = "Altro / OpenAI-compatible",
+        requires_api_key: bool = False,
+    ) -> None:
+        self.id = provider_id
+        self.label = label
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
         self.model = model
+        self.requires_api_key = requires_api_key
 
     @property
     def configured(self) -> bool:
-        return bool(self.base_url and self.api_key and self.model)
+        credentials_ready = bool(self.api_key) or not self.requires_api_key
+        return bool(self.base_url and self.model and credentials_ready)
 
     def _headers(self) -> dict[str, str]:
-        return {"Authorization": f"Bearer {self.api_key}"}
+        return {"Authorization": f"Bearer {self.api_key}"} if self.api_key else {}
+
+    async def list_models(self) -> list[str]:
+        credentials_ready = bool(self.api_key) or not self.requires_api_key
+        if not self.base_url or not credentials_ready:
+            return []
+        async with httpx.AsyncClient(timeout=10) as client:
+            response = await client.get(
+                f"{self.base_url}/models", headers=self._headers()
+            )
+        response.raise_for_status()
+        return sorted(
+            entry["id"]
+            for entry in response.json().get("data", [])
+            if isinstance(entry, dict) and isinstance(entry.get("id"), str)
+        )
 
     async def health_check(self) -> bool:
         if not self.configured:
             return False
         try:
-            async with httpx.AsyncClient(timeout=5) as client:
-                response = await client.get(f"{self.base_url}/models", headers=self._headers())
-            return response.is_success
+            models = await self.list_models()
+            return self.model in models
         except httpx.HTTPError:
             return False
 
@@ -95,7 +119,10 @@ class OpenAICompatibleProvider:
         messages = [
             {
                 "role": "user",
-                "content": f"{INSIGHT_PROMPT}\n\nDati aggregati:\n{snapshot.model_dump_json()}",
+                "content": (
+                    f"{INSIGHT_PROMPT.format(locale=snapshot.locale)}\n\n"
+                    f"Dati aggregati:\n{snapshot.model_dump_json()}"
+                ),
             }
         ]
         return await self._complete(messages, GeneratedInsights)

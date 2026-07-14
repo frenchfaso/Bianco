@@ -13,6 +13,7 @@ from app.repositories.sync import (
 )
 from app.schemas.sync import PullRequest, PullResponse, PushRequest, PushResponse
 from app.security import require_token
+from app.services.ai_queue import wake_ai_worker
 from app.services.events import broadcaster
 
 router = APIRouter(
@@ -47,6 +48,8 @@ async def push(
         raise HTTPException(status_code=422, detail=str(error)) from error
     if changed:
         await broadcaster.publish_resync()
+        if collection == "receipts":
+            wake_ai_worker()
     return response
 
 

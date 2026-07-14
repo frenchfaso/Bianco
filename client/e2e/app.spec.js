@@ -5,13 +5,41 @@ const tinyPng = Buffer.from(
   'base64'
 )
 
+const contextDefaults = {
+  baseURL: process.env.PLAYWRIGHT_BASE_URL || 'http://localhost',
+  locale: 'it-IT',
+  httpCredentials: {
+    username: process.env.BIANCO_TEST_AUTH_USER || 'test-user',
+    password: process.env.BIANCO_TEST_AUTH_PASSWORD || 'test-password'
+  },
+  ignoreHTTPSErrors: true
+}
+
+const testProviders = () => [
+  { id: 'openai', label: 'OpenAI', configured: false, available: false, active: false, model: '', baseUrl: 'https://api.openai.com/v1', hasApiKey: false, requiresApiKey: true, source: 'environment' },
+  { id: 'ollama', label: 'Ollama', configured: false, available: false, active: false, model: '', baseUrl: '', hasApiKey: false, requiresApiKey: false, source: 'environment' },
+  { id: 'openai-compatible', label: 'Altro / OpenAI-compatible', configured: false, available: false, active: false, model: '', baseUrl: '', hasApiKey: false, requiresApiKey: false, source: 'environment' }
+]
+
+function newBiancoContext(browser, options = {}) {
+  return browser.newContext({ ...contextDefaults, ...options })
+}
+
+async function expectPersistedSetting(page, key, value) {
+  await expect.poll(() => page.locator('.app-shell').evaluate(
+    (element, settingKey) => window.Alpine.$data(element).settings[settingKey],
+    key
+  )).toBe(value)
+}
+
 async function createManual(page, merchant, total) {
   await page.getByRole('button', { name: 'Archivio' }).click()
   await page.getByRole('button', { name: '+ Manuale' }).click()
-  await page.getByLabel('Esercente').fill(merchant)
-  await page.getByLabel('Totale (€)').fill(total)
-  await page.getByRole('button', { name: 'Conferma', exact: true }).click()
-  await page.getByLabel('Chiudi').click()
+  const detail = page.getByRole('dialog', { name: 'Controlla lo scontrino' })
+  await detail.getByLabel('Esercente').fill(merchant)
+  await detail.getByLabel('Totale (EUR)').fill(total)
+  await detail.getByRole('button', { name: 'Salva', exact: true }).click()
+  await expect(detail).not.toBeVisible()
 }
 
 async function captureReceipt(page, merchant, total) {
@@ -22,20 +50,17 @@ async function captureReceipt(page, merchant, total) {
     buffer: tinyPng
   })
   await expect(page.getByAltText('Anteprima dello scontrino')).toBeVisible()
-  await page.getByRole('button', { name: 'Salva sul dispositivo' }).click()
-  await expect(page.getByAltText('Fotografia dello scontrino')).toBeVisible()
-  await page.getByLabel('Esercente').fill(merchant)
-  await page.getByLabel('Totale (€)').fill(total)
-  await page.getByRole('dialog').getByRole('combobox').selectOption('food_grocery')
-  await page.getByRole('button', { name: 'Conferma', exact: true }).click()
-  await page.getByLabel('Chiudi').click()
-}
-
-async function configureSync(page) {
-  await page.getByRole('button', { name: 'Impostazioni' }).click()
-  await page.getByRole('switch', { name: /Abilita backend/ }).check()
-  await page.getByLabel('Token segreto').fill(process.env.BIANCO_TEST_TOKEN || 'test-token')
-  await page.getByRole('button', { name: 'Salva e collega' }).click()
+  await page.getByRole('button', { name: 'Salva', exact: true }).click()
+  const archive = page.getByRole('region', { name: 'Archivio' })
+  await expect(archive).toBeVisible()
+  await archive.getByText('Scontrino senza esercente').click()
+  const detail = page.getByRole('dialog', { name: 'Controlla lo scontrino' })
+  await expect(detail.getByAltText('Fotografia dello scontrino')).toBeVisible()
+  await detail.getByLabel('Esercente').fill(merchant)
+  await detail.getByLabel('Totale (EUR)').fill(total)
+  await detail.getByLabel('Categoria').selectOption('food_grocery')
+  await detail.getByRole('button', { name: 'Salva', exact: true }).click()
+  await expect(detail).not.toBeVisible()
 }
 
 async function ensureOfflineControl(page) {
@@ -59,8 +84,9 @@ test('production PWA keeps a receipt available while offline', async ({ page, co
   await expect(archive.getByText('Forno Offline')).toBeVisible()
   await expect(archive.getByText(/12,50/)).toBeVisible()
   await archive.getByText('Forno Offline').click()
-  await expect(reopened.getByAltText('Fotografia dello scontrino')).toBeVisible()
-  await reopened.getByLabel('Chiudi').click()
+  const detail = reopened.getByRole('dialog', { name: 'Controlla lo scontrino' })
+  await expect(detail.getByAltText('Fotografia dello scontrino')).toBeVisible()
+  await detail.getByLabel('Chiudi', { exact: true }).click()
   await reopened.getByRole('button', { name: 'Panoramica' }).click()
   const dashboard = reopened.getByRole('region', { name: 'Panoramica' })
   await expect(dashboard.getByText(/12,50/).first()).toBeVisible()
@@ -69,27 +95,22 @@ test('production PWA keeps a receipt available while offline', async ({ page, co
 
 test('two browser contexts synchronize through pull/push and SSE', async ({ browser }) => {
   const merchant = `Mercato Sync ${Date.now()}`
-  const first = await browser.newContext()
-  const second = await browser.newContext()
+  const first = await newBiancoContext(browser)
+  const second = await newBiancoContext(browser)
   const pageA = await first.newPage()
   const pageB = await second.newPage()
   await Promise.all([pageA.goto('/'), pageB.goto('/')])
-  await configureSync(pageA)
-  await configureSync(pageB)
   await createManual(pageA, merchant, '23.40')
-  await pageA.getByRole('button', { name: 'Panoramica' }).click()
-  await pageA.getByRole('button', { name: 'Sincronizza' }).click()
   await pageB.getByRole('button', { name: 'Archivio' }).click()
   await expect(pageB.getByRole('region', { name: 'Archivio' }).getByText(merchant)).toBeVisible({ timeout: 20_000 })
   await pageB.getByRole('region', { name: 'Archivio' }).getByText(merchant).click()
   await second.setOffline(true)
   const editedMerchant = `${merchant} modificato`
-  await pageB.getByLabel('Esercente').fill(editedMerchant)
-  await pageB.getByRole('button', { name: 'Conferma', exact: true }).click()
-  await pageB.getByLabel('Chiudi').click()
+  const detail = pageB.getByRole('dialog', { name: 'Controlla lo scontrino' })
+  await detail.getByLabel('Esercente').fill(editedMerchant)
+  await detail.getByRole('button', { name: 'Salva', exact: true }).click()
+  await expect(detail).not.toBeVisible()
   await second.setOffline(false)
-  await pageB.getByRole('button', { name: 'Panoramica' }).click()
-  await pageB.getByRole('button', { name: 'Sincronizza' }).click()
   await pageA.getByRole('button', { name: 'Archivio' }).click()
   await expect(pageA.getByRole('region', { name: 'Archivio' }).getByText(editedMerchant)).toBeVisible({ timeout: 20_000 })
   await Promise.all([first.close(), second.close()])
@@ -97,28 +118,22 @@ test('two browser contexts synchronize through pull/push and SSE', async ({ brow
 
 test('receipt images upload by hash and download lazily on another device', async ({ browser }) => {
   const merchant = `Foto Sync ${Date.now()}`
-  const first = await browser.newContext()
-  const second = await browser.newContext()
+  const first = await newBiancoContext(browser)
+  const second = await newBiancoContext(browser)
   const pageA = await first.newPage()
   const pageB = await second.newPage()
   await Promise.all([pageA.goto('/'), pageB.goto('/')])
-  await configureSync(pageA)
-  await configureSync(pageB)
   await captureReceipt(pageA, merchant, '7.80')
-  await pageA.getByRole('button', { name: 'Panoramica' }).click()
-  await pageA.getByRole('button', { name: 'Sincronizza' }).click()
 
   const origin = new URL(pageA.url()).origin
-  const headers = { Authorization: `Bearer ${process.env.BIANCO_TEST_TOKEN || 'test-token'}` }
   await expect.poll(async () => {
     const pull = await pageA.request.post(`${origin}/api/sync/receipts/pull`, {
-      headers,
       data: { checkpoint: { sequence: 0 }, batchSize: 500 }
     })
     const documents = (await pull.json()).documents
     const receipt = documents.find((entry) => entry.merchantNormalized === merchant)
     if (!receipt?.imageHash) return false
-    const image = await pageA.request.get(`${origin}/api/files/${receipt.imageHash}?variant=thumbnail`, { headers })
+    const image = await pageA.request.get(`${origin}/api/files/${receipt.imageHash}?variant=thumbnail`)
     return image.ok()
   }, { timeout: 20_000 }).toBe(true)
 
@@ -126,13 +141,337 @@ test('receipt images upload by hash and download lazily on another device', asyn
   const remoteReceipt = pageB.getByRole('region', { name: 'Archivio' }).getByText(merchant)
   await expect(remoteReceipt).toBeVisible({ timeout: 20_000 })
   await remoteReceipt.click()
-  await expect(pageB.getByAltText('Fotografia dello scontrino')).toBeVisible({ timeout: 20_000 })
-  await pageB.getByRole('button', { name: /Apri immagine completa/ }).click()
-  await expect(pageB.getByText('Immagine completa conservata localmente')).toBeVisible()
-  await pageB.getByLabel('Chiudi').click()
+  let detail = pageB.getByRole('dialog', { name: 'Controlla lo scontrino' })
+  await expect(detail.getByAltText('Fotografia dello scontrino')).toBeVisible({ timeout: 20_000 })
+  await detail.getByRole('button', { name: /Apri immagine completa/ }).click()
+  await expect(detail.getByText('Immagine completa conservata localmente')).toBeVisible()
+  await detail.getByLabel('Chiudi', { exact: true }).click()
   await second.setOffline(true)
   await remoteReceipt.click()
-  await pageB.getByRole('button', { name: /Apri immagine completa/ }).click()
-  await expect(pageB.getByText('Immagine completa conservata localmente')).toBeVisible()
+  detail = pageB.getByRole('dialog', { name: 'Controlla lo scontrino' })
+  await detail.getByRole('button', { name: /Apri immagine completa/ }).click()
+  await expect(detail.getByText('Immagine completa conservata localmente')).toBeVisible()
   await Promise.all([first.close(), second.close()])
+})
+
+test('Ollama validates the endpoint, lists models and activates the selection automatically', async ({ page }) => {
+  const writes = []
+  await page.route('**/api/ai/providers**', async (route) => {
+    const request = route.request()
+    const url = new URL(request.url())
+    if (url.pathname === '/api/ai/providers' && request.method() === 'GET') {
+      await route.fulfill({ json: { providers: testProviders() } })
+      return
+    }
+    if (url.pathname === '/api/ai/providers/ollama/models' && request.method() === 'GET') {
+      await route.fulfill({ json: { models: ['qwen3-vl:8b', 'gemma3:12b'] } })
+      return
+    }
+    if (url.pathname === '/api/ai/providers/ollama' && request.method() === 'PUT') {
+      const payload = request.postDataJSON()
+      writes.push(payload)
+      await route.fulfill({ json: {
+        id: 'ollama', label: 'Ollama', configured: Boolean(payload.model), available: Boolean(payload.model), active: false,
+        model: payload.model, baseUrl: payload.baseUrl, hasApiKey: false, requiresApiKey: false, source: 'database'
+      } })
+      return
+    }
+    if (url.pathname === '/api/ai/providers/ollama/active' && request.method() === 'PUT') {
+      await route.fulfill({ json: {
+        id: 'ollama', label: 'Ollama', configured: true, available: true, active: true,
+        model: 'qwen3-vl:8b', baseUrl: 'http://host.containers.internal:11434',
+        hasApiKey: false, requiresApiKey: false, source: 'database'
+      } })
+      return
+    }
+    await route.continue()
+  })
+
+  await page.goto('/')
+  const navigation = page.getByRole('navigation', { name: 'Navigazione principale' })
+  await expect(navigation.getByRole('button')).toHaveText(['◫Panoramica', '＋Acquisisci', '≡Archivio'])
+  const navTypography = await navigation.getByRole('button', { name: 'Panoramica' }).locator('span').evaluateAll(
+    (elements) => elements.map((element) => Number.parseFloat(window.getComputedStyle(element).fontSize))
+  )
+  expect(navTypography[0]).toBeGreaterThan(navTypography[1])
+  await expect(navigation.getByRole('button', { name: 'Acquisisci' }).locator('.bottom-nav-icon'))
+    .toHaveCSS('background-color', 'rgb(15, 118, 110)')
+  await expect(navigation.getByRole('button', { name: 'Impostazioni' })).toHaveCount(0)
+  await page.getByRole('button', { name: 'Impostazioni' }).click()
+  const settings = page.getByRole('dialog', { name: 'Impostazioni' })
+  await expect(settings).toBeVisible()
+  await expect(settings.getByRole('heading', { name: 'Sincronizzazione' })).toHaveCount(0)
+  await settings.getByLabel('Provider AI').selectOption('ollama')
+  await settings.getByLabel('Indirizzo del provider').fill('http://host.containers.internal:11434')
+  await expect(settings.getByLabel('Modello')).toBeEnabled({ timeout: 5_000 })
+  await expect(settings.getByLabel('Modello').locator('option')).toHaveCount(3)
+  await settings.getByLabel('Modello').selectOption('qwen3-vl:8b')
+  await expect(settings.getByText('Ollama · qwen3-vl:8b è ora il modello di Bianco.')).toBeVisible()
+  await expect(settings.getByText('In uso:').locator('..')).toContainText('Ollama · qwen3-vl:8b')
+  expect(writes).toEqual([
+    { baseUrl: 'http://host.containers.internal:11434', model: '', clearApiKey: false },
+    { baseUrl: 'http://host.containers.internal:11434', model: 'qwen3-vl:8b', clearApiKey: false }
+  ])
+})
+
+test('the only configured model becomes active on a new device and populates a captured receipt', async ({ page }) => {
+  let directExtractionRequests = 0
+  const consoleErrors = []
+  page.on('console', (message) => {
+    if (message.type() === 'error') consoleErrors.push(message.text())
+  })
+  const configuredProviders = testProviders().map((provider) => provider.id === 'ollama' ? {
+    ...provider,
+    configured: true,
+    available: true,
+    active: true,
+    model: 'qwen3-vl:8b',
+    baseUrl: 'http://host.containers.internal:11434',
+    source: 'database'
+  } : provider)
+  await page.route('**/api/ai/**', async (route) => {
+    const request = route.request()
+    const url = new URL(request.url())
+    if (url.pathname === '/api/ai/providers' && request.method() === 'GET') {
+      await route.fulfill({ json: { providers: configuredProviders } })
+      return
+    }
+    if (url.pathname === '/api/ai/providers/ollama' && request.method() === 'PUT') {
+      await route.fulfill({ json: configuredProviders.find((provider) => provider.id === 'ollama') })
+      return
+    }
+    if (url.pathname === '/api/ai/providers/ollama/models' && request.method() === 'GET') {
+      await route.fulfill({ json: { models: ['qwen3-vl:8b'] } })
+      return
+    }
+    if (url.pathname === '/api/ai/receipts/extract') {
+      directExtractionRequests += 1
+      await route.fulfill({ status: 404, json: { detail: 'Not found' } })
+      return
+    }
+    await route.continue()
+  })
+
+  await page.goto('/')
+  await page.getByRole('button', { name: 'Impostazioni' }).click()
+  const settings = page.getByRole('dialog', { name: 'Impostazioni' })
+  await expect(settings.getByText('In uso:').locator('..')).toContainText('Ollama · qwen3-vl:8b')
+  await settings.getByRole('button', { name: 'Chiudi impostazioni' }).click()
+
+  await page.getByRole('button', { name: 'Acquisisci' }).click()
+  await page.locator('#gallery-input').setInputFiles({
+    name: 'receipt.png',
+    mimeType: 'image/png',
+    buffer: tinyPng
+  })
+  await page.getByRole('button', { name: 'Salva', exact: true }).click()
+
+  const detail = page.getByRole('dialog', { name: 'Controlla lo scontrino' })
+  await expect(detail).not.toBeVisible()
+  const archive = page.getByRole('region', { name: 'Archivio' })
+  await expect(archive).toBeVisible()
+  const receiptId = await page.locator('.app-shell').evaluate((element) => {
+    const data = window.Alpine.$data(element)
+    return data.receipts.find((receipt) => receipt.status === 'queued')?.id
+  })
+  expect(receiptId).toBeTruthy()
+  const origin = new URL(page.url()).origin
+  let masterReceipt
+  await expect.poll(async () => {
+    const response = await page.request.post(`${origin}/api/sync/receipts/pull`, {
+      data: { checkpoint: { sequence: 0 }, batchSize: 500 }
+    })
+    masterReceipt = (await response.json()).documents.find((entry) => entry.id === receiptId)
+    return Boolean(masterReceipt)
+  }, { timeout: 20_000 }).toBe(true)
+  const updatedAt = new Date(Date.now() + 1000).toISOString()
+  const extractedReceipt = {
+    ...masterReceipt,
+    status: 'needs_review',
+    merchantRaw: 'PANIFICIO ROMA',
+    merchantNormalized: 'Panificio Roma',
+    transactionDate: '2026-07-14',
+    subtotalMinor: 250,
+    taxMinor: 0,
+    discountMinor: 0,
+    totalMinor: 250,
+    categoryId: 'food_grocery',
+    overallConfidence: 0.96,
+    ai: { providerId: 'ollama', modelId: 'qwen3-vl:8b', promptVersion: 'receipt-v1', schemaVersion: 1 },
+    updatedAt,
+    updatedByDevice: 'bianco-ai-worker'
+  }
+  const receiptPush = await page.request.post(`${origin}/api/sync/receipts/push`, {
+    data: { rows: [{ assumedMasterState: masterReceipt, newDocumentState: extractedReceipt }] }
+  })
+  expect((await receiptPush.json()).conflicts).toEqual([])
+  const itemPush = await page.request.post(`${origin}/api/sync/receipt_items/push`, {
+    data: { rows: [{ assumedMasterState: null, newDocumentState: {
+      id: `ai-item-${Date.now()}`,
+      receiptId,
+      rawName: 'PANE',
+      normalizedName: 'Pane',
+      quantity: 1,
+      unitPriceMinor: 250,
+      totalPriceMinor: 250,
+      categoryId: 'food_grocery',
+      confidence: 0.97,
+      position: 0,
+      userEdited: false,
+      updatedAt,
+      updatedByDevice: 'bianco-ai-worker',
+      _deleted: false
+    } }] }
+  })
+  expect((await itemPush.json()).conflicts).toEqual([])
+  await expect(archive.getByText('Panificio Roma')).toBeVisible({ timeout: 10_000 })
+  await archive.getByText('Panificio Roma').click()
+  await expect(detail.getByLabel('Esercente')).toHaveValue('Panificio Roma', { timeout: 10_000 })
+  await expect(detail.getByLabel('Totale (EUR)')).toHaveValue('2.50')
+  await expect(detail.getByLabel('Nome prodotto 1')).toHaveValue('Pane')
+  await expect(detail.getByRole('button', { name: 'Salva', exact: true })).toHaveCount(1)
+  await expect(detail.getByRole('button', { name: 'Conferma', exact: true })).toHaveCount(0)
+
+  await detail.getByRole('button', { name: 'Salva', exact: true }).click()
+  await expect(detail).not.toBeVisible()
+  await expect(archive).toBeVisible()
+  await expect(archive.getByText('Panificio Roma')).toBeVisible()
+  expect(directExtractionRequests).toBe(0)
+  expect(consoleErrors.filter((message) => message.includes('Canvas is already in use'))).toEqual([])
+})
+
+test('settings is a modal and Escape restores focus to its trigger', async ({ page }) => {
+  await page.goto('/')
+  const trigger = page.getByRole('button', { name: 'Impostazioni' })
+  await trigger.click()
+
+  const settings = page.getByRole('dialog', { name: 'Impostazioni' })
+  await expect(settings).toBeVisible()
+  await expect(settings.getByRole('heading', { name: 'Impostazioni' })).toBeFocused()
+  await expect(page.locator('html')).toHaveClass(/modal-is-open/)
+
+  await page.keyboard.press('Escape')
+  await expect(settings).not.toBeVisible()
+  await expect(page.locator('html')).not.toHaveClass(/modal-is-open/)
+  await expect(trigger).toBeFocused()
+})
+
+test('a forced dark theme survives a reload', async ({ page }) => {
+  await page.goto('/')
+  await page.getByRole('button', { name: 'Impostazioni' }).click()
+  let settings = page.getByRole('dialog', { name: 'Impostazioni' })
+  await settings.getByLabel('Tema').selectOption('dark')
+
+  await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark')
+  await expect(page.locator('meta[name="theme-color"]')).toHaveAttribute('content', '#101816')
+  await expectPersistedSetting(page, 'themePreference', 'dark')
+
+  await page.reload()
+  await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark')
+  await page.getByRole('button', { name: 'Impostazioni' }).click()
+  settings = page.getByRole('dialog', { name: 'Impostazioni' })
+  await expect(settings.getByLabel('Tema')).toHaveValue('dark')
+})
+
+test('automatic theme follows a dark system preference', async ({ browser }) => {
+  const context = await newBiancoContext(browser, { colorScheme: 'dark' })
+  try {
+    const page = await context.newPage()
+    await page.goto('/')
+    await expect(page.locator('html')).not.toHaveAttribute('data-theme', /.+/)
+    await expect(page.locator('meta[name="theme-color"]')).toHaveAttribute('content', '#101816')
+    await expect.poll(() => page.locator('html').evaluate(
+      (element) => window.getComputedStyle(element).colorScheme
+    )).toBe('dark')
+    await page.getByRole('button', { name: 'Impostazioni' }).click()
+    await expect(page.getByRole('dialog', { name: 'Impostazioni' }).getByLabel('Tema')).toHaveValue('auto')
+  } finally {
+    await context.close()
+  }
+})
+
+test('a forced French language survives a reload', async ({ page }) => {
+  await page.goto('/')
+  await page.getByRole('button', { name: 'Impostazioni' }).click()
+  const italianSettings = page.getByRole('dialog', { name: 'Impostazioni' })
+  await italianSettings.getByLabel('Lingua dell’app').selectOption('fr')
+
+  await expect(page.locator('html')).toHaveAttribute('lang', 'fr')
+  await expect(page.getByRole('heading', { name: 'Vue d’ensemble', level: 1 })).toBeVisible()
+  await expectPersistedSetting(page, 'languagePreference', 'fr')
+
+  await page.reload()
+  await expect(page.locator('html')).toHaveAttribute('lang', 'fr')
+  await expect(page.getByRole('heading', { name: 'Vue d’ensemble', level: 1 })).toBeVisible()
+  await page.getByRole('button', { name: 'Paramètres' }).click()
+  const frenchSettings = page.getByRole('dialog', { name: 'Paramètres' })
+  await expect(frenchSettings.getByLabel('Langue de l’application')).toHaveValue('fr')
+})
+
+test('an unsupported browser locale falls back to English', async ({ browser }) => {
+  const context = await newBiancoContext(browser, { locale: 'pt-BR' })
+  try {
+    const page = await context.newPage()
+    await page.goto('/')
+    await expect(page.locator('html')).toHaveAttribute('lang', 'en')
+    await expect(page.getByRole('heading', { name: 'Overview', level: 1 })).toBeVisible()
+    await page.getByRole('button', { name: 'Settings' }).click()
+    const settings = page.getByRole('dialog', { name: 'Settings' })
+    await expect(settings.getByLabel('App language')).toHaveValue('auto')
+  } finally {
+    await context.close()
+  }
+})
+
+test('automatic language follows a supported German browser locale', async ({ browser }) => {
+  const context = await newBiancoContext(browser, { locale: 'de-DE' })
+  try {
+    const page = await context.newPage()
+    await page.goto('/')
+    await expect(page.locator('html')).toHaveAttribute('lang', 'de')
+    await expect(page.getByRole('heading', { name: 'Übersicht', level: 1 })).toBeVisible()
+    await page.getByRole('button', { name: 'Einstellungen' }).click()
+    const settings = page.getByRole('dialog', { name: 'Einstellungen' })
+    await expect(settings.getByLabel('App-Sprache')).toHaveValue('auto')
+  } finally {
+    await context.close()
+  }
+})
+
+test('an API key is cleared from form memory when settings closes', async ({ page }) => {
+  await page.route('**/api/ai/providers**', async (route) => {
+    const request = route.request()
+    const url = new URL(request.url())
+    if (url.pathname === '/api/ai/providers' && request.method() === 'GET') {
+      await route.fulfill({ json: { providers: testProviders() } })
+      return
+    }
+    if (url.pathname === '/api/ai/providers/openai' && request.method() === 'PUT') {
+      const payload = request.postDataJSON()
+      await route.fulfill({ json: {
+        id: 'openai', label: 'OpenAI', configured: Boolean(payload.model), available: false, active: false,
+        model: payload.model, baseUrl: payload.baseUrl, hasApiKey: true, requiresApiKey: true, source: 'database'
+      } })
+      return
+    }
+    if (url.pathname === '/api/ai/providers/openai/models' && request.method() === 'GET') {
+      await route.fulfill({ json: { models: [] } })
+      return
+    }
+    await route.continue()
+  })
+
+  await page.goto('/')
+  const trigger = page.getByRole('button', { name: 'Impostazioni' })
+  await trigger.click()
+  let settings = page.getByRole('dialog', { name: 'Impostazioni' })
+  await settings.getByLabel('Provider AI').selectOption('openai')
+  const apiKey = settings.getByLabel('API key', { exact: true })
+  await apiKey.fill('sk-placeholder-never-sent-to-a-real-provider')
+  await settings.getByRole('button', { name: 'Chiudi impostazioni' }).click()
+  await expect(settings).not.toBeVisible()
+
+  await trigger.click()
+  settings = page.getByRole('dialog', { name: 'Impostazioni' })
+  await expect(settings.getByLabel('API key', { exact: true })).toHaveValue('')
 })

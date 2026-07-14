@@ -22,7 +22,9 @@ services:
       BIANCO_DATABASE_URL: sqlite:////tmp/bianco-test.db
       BIANCO_DATA_DIR: /tmp/bianco-test-data
       BIANCO_SYNC_TOKEN: test-token
+      BIANCO_SECRET_KEY: test-secret-key-that-is-at-least-32-characters
       BIANCO_AI_PROVIDER: none
+      BIANCO_AI_WORKER_ENABLED: "false"
     command: ["python", "-m", "pytest", "-q"]
 
   test-api:
@@ -33,7 +35,9 @@ services:
       BIANCO_DATABASE_URL: sqlite:////data/bianco.db
       BIANCO_DATA_DIR: /data
       BIANCO_SYNC_TOKEN: test-token
+      BIANCO_SECRET_KEY: test-secret-key-that-is-at-least-32-characters
       BIANCO_AI_PROVIDER: none
+      BIANCO_AI_WORKER_ENABLED: "false"
     healthcheck:
       test: ["CMD-SHELL", "python -c 'import urllib.request; urllib.request.urlopen(\"http://localhost:8000/api/health/live\")'"]
       interval: 2s
@@ -50,6 +54,9 @@ services:
       target: production
     environment:
       BIANCO_SITE_ADDRESS: :80
+      BIANCO_SYNC_TOKEN: test-token
+      BIANCO_AUTH_USER: test-user
+      BIANCO_AUTH_PASSWORD_HASH: $$2y$$05$$wIb9ZBmxVX2BJzYghjpQX.J2xJpUcYs78ZZFa0DnH52HukX7o0SfG
     depends_on:
       test-api:
         condition: service_healthy
@@ -62,7 +69,6 @@ services:
       - e2e_node_modules:/work/client/node_modules
     environment:
       PLAYWRIGHT_BASE_URL: http://localhost
-      BIANCO_TEST_TOKEN: test-token
     network_mode: service:test-web
     depends_on:
       - test-web
