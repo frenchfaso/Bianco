@@ -1,4 +1,4 @@
-FROM node:24.18.0-alpine3.23 AS deps
+FROM docker.io/library/node:24.18.0-alpine3.23 AS deps
 
 WORKDIR /app
 
@@ -22,7 +22,7 @@ COPY . .
 RUN npm run build
 
 
-FROM caddy:2.11.4-alpine AS production
+FROM docker.io/library/caddy:2.11.4-alpine AS production
 
 COPY Caddyfile /etc/caddy/Caddyfile
 COPY --from=build /app/dist /srv

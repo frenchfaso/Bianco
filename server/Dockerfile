@@ -1,4 +1,4 @@
-FROM python:3.13.14-slim-bookworm AS base
+FROM docker.io/library/python:3.13.14-slim-bookworm AS base
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
