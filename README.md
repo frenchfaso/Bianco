@@ -32,10 +32,10 @@ docker run --rm -it caddy:2.11.4-alpine caddy hash-password
 docker compose up -d --build
 ```
 
-Open [http://localhost](http://localhost) and sign in with the credentials from
-your `.env` file. For a public deployment, set `BIANCO_SITE_ADDRESS` to a domain
-served over HTTPS. Rootless runtimes can use unprivileged host ports such as
-`8080` and `8443`.
+Open [http://localhost:8080](http://localhost:8080) and sign in with the
+credentials from your `.env` file. Bianco binds to `127.0.0.1` by default so a
+local HTTPS reverse proxy can expose it without also leaving a plain HTTP port
+open on the network.
 
 ## AI providers
 
@@ -73,9 +73,17 @@ to decrypt saved provider credentials after a restore.
 
 ## Security
 
-Use Bianco behind HTTPS or on a trusted private network/VPN. Choose long,
-independent secrets, protect `.env`, keep dependencies updated, and never expose
-the FastAPI service directly to the internet.
+Use Bianco behind HTTPS. For example, Tailscale Serve can securely publish the
+default listener inside your tailnet:
+
+```bash
+sudo tailscale serve --bg http://127.0.0.1:8080
+```
+
+Set `BIANCO_BIND_ADDRESS=0.0.0.0` only when direct network access is explicitly
+required and protected by a trusted TLS setup. Choose long, independent secrets,
+protect `.env`, keep dependencies updated, and never expose the FastAPI service
+directly to the internet.
 
 ## License
 

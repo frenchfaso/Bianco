@@ -7,8 +7,8 @@ export BIANCO_SECRET_KEY=smoke-test-secret-key-at-least-32-characters
 export BIANCO_AUTH_USER=smoke-user
 export BIANCO_AUTH_PASSWORD_HASH='$2y$05$T2WROzC9udzG22f01YRqC.3GbfaqzFbi04ifCy/HU.F0pON7o6/sm'
 export BIANCO_SITE_ADDRESS=:80
+export BIANCO_BIND_ADDRESS=127.0.0.1
 export BIANCO_HTTP_PORT=8088
-export BIANCO_HTTPS_PORT=8448
 
 cleanup() {
   docker compose down -v --remove-orphans
