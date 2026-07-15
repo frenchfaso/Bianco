@@ -16,6 +16,27 @@ const savedLanguage = (() => {
 
 await initI18n({ preference: savedLanguage })
 
+const serviceWorkerUpdateIntervalMs = 60 * 60 * 1000
+
+async function checkForServiceWorkerUpdate(swUrl, registration) {
+  if (!registration || registration.installing || registration.waiting || !navigator.onLine) return
+  try {
+    const response = await fetch(swUrl, {
+      cache: 'no-store',
+      headers: { 'cache-control': 'no-cache' }
+    })
+    const expectedUrl = new URL(swUrl, window.location.href)
+    const responseUrl = new URL(response.url)
+    if (
+      response.status === 200
+      && responseUrl.origin === expectedUrl.origin
+      && responseUrl.pathname === expectedUrl.pathname
+    ) await registration.update()
+  } catch {
+    // Updates are opportunistic: offline and transient server failures are harmless.
+  }
+}
+
 let updateServiceWorker = null
 updateServiceWorker = registerSW({
   immediate: true,
@@ -24,6 +45,12 @@ updateServiceWorker = registerSW({
   },
   onOfflineReady() {
     window.dispatchEvent(new CustomEvent('bianco-offline-ready'))
+  },
+  onRegisteredSW(swUrl, registration) {
+    if (!registration) return
+    window.setInterval(() => {
+      void checkForServiceWorkerUpdate(swUrl, registration)
+    }, serviceWorkerUpdateIntervalMs)
   }
 })
 

@@ -421,6 +421,24 @@ test('PWA installation is suggested outside settings and respects not now', asyn
   await expect(suggestion).not.toBeVisible()
 })
 
+test('an available PWA update is shown as a toast and can be applied immediately', async ({ page }) => {
+  await page.goto('/')
+  await page.waitForFunction(() => {
+    const shell = document.querySelector('.app-shell')
+    return shell && window.Alpine?.$data(shell).loading === false
+  })
+  await page.evaluate(() => {
+    window.biancoUpdateTestCalls = 0
+    window.biancoApplyUpdate = () => { window.biancoUpdateTestCalls += 1 }
+    window.dispatchEvent(new CustomEvent('bianco-update'))
+  })
+
+  const updateToast = page.getByRole('status').filter({ hasText: 'È disponibile una nuova versione.' })
+  await expect(updateToast).toBeVisible()
+  await updateToast.getByRole('button', { name: 'Aggiorna' }).click()
+  await expect.poll(() => page.evaluate(() => window.biancoUpdateTestCalls)).toBe(1)
+})
+
 test('destructive actions use an accessible modal instead of native confirm', async ({ page }) => {
   const merchant = `Conferma modale ${Date.now()}`
   await page.goto('/')

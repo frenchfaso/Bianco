@@ -565,7 +565,7 @@ article h2, article h3 { color: var(--ink); }
 .detail-actions button { width: auto; margin: 0; }
 .detail-actions .spacer { flex: 1; }
 
-.toast, .update-banner, .install-toast {
+.toast, .action-toast {
   display: flex;
   gap: 1rem;
   align-items: center;
@@ -577,10 +577,9 @@ article h2, article h3 { color: var(--ink); }
   box-shadow: var(--shadow);
   font-size: 0.8rem;
 }
-.toast, .update-banner { position: fixed; z-index: 120; right: 1rem; max-width: min(26rem, calc(100vw - 2rem)); }
+.toast { position: fixed; z-index: 120; right: 1rem; max-width: min(26rem, calc(100vw - 2rem)); }
 .toast { bottom: 5.7rem; }
 .toast.error { color: var(--danger); border-color: var(--toast-danger-border); }
-.update-banner { top: 1rem; }
 .toast-stack {
   position: fixed;
   z-index: 120;
@@ -590,12 +589,12 @@ article h2, article h3 { color: var(--ink); }
   gap: 0.65rem;
   width: min(30rem, calc(100vw - 2rem));
 }
-.toast-stack > .toast, .toast-stack > .install-toast { position: static; width: 100%; max-width: none; }
-.install-toast { align-items: flex-start; justify-content: space-between; }
-.install-toast-copy { display: grid; gap: 0.2rem; }
-.install-toast-copy span { color: var(--muted); line-height: 1.35; }
-.install-toast-actions { display: flex; flex: 0 0 auto; gap: 0.45rem; }
-.install-toast-actions button { width: auto; margin: 0; white-space: nowrap; }
+.toast-stack > .toast, .toast-stack > .action-toast { position: static; width: 100%; max-width: none; }
+.action-toast { align-items: flex-start; justify-content: space-between; }
+.action-toast-copy { display: grid; gap: 0.2rem; }
+.action-toast-copy span { color: var(--muted); line-height: 1.35; }
+.action-toast-actions { display: flex; flex: 0 0 auto; gap: 0.45rem; }
+.action-toast-actions button { width: auto; margin: 0; white-space: nowrap; }
 
 @media (max-width: 760px) {
   .app-header { min-height: 4.2rem; }
@@ -611,9 +610,9 @@ article h2, article h3 { color: var(--ink); }
   .receipt-row { grid-template-columns: 0.3rem minmax(0, 1fr) auto; gap: 0.65rem; padding: 0.75rem; }
   .receipt-copy strong { max-width: 48vw; font-size: 0.86rem; }
   .receipt-value strong { font-size: 0.86rem; }
-  .install-toast { display: grid; }
-  .install-toast-actions { width: 100%; }
-  .install-toast-actions button { flex: 1; }
+  .action-toast { display: grid; }
+  .action-toast-actions { width: 100%; }
+  .action-toast-actions button { flex: 1; }
   #settings-dialog[open] {
     align-items: stretch;
   }

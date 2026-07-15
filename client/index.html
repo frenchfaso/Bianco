@@ -368,22 +368,33 @@
         </article>
       </div>
 
-      <div class="update-banner" x-show="updateAvailable">
-        <span x-text="t('pwa.updateAvailable')"></span><button class="compact" @click="applyUpdate" x-text="t('pwa.update')"></button>
-      </div>
       <div class="toast-stack">
         <section
-          class="install-toast"
+          class="action-toast"
+          x-show="updateAvailable"
+          x-transition
+          role="status"
+          aria-live="polite"
+        >
+          <div class="action-toast-copy">
+            <strong x-text="t('pwa.updateAvailable')"></strong>
+          </div>
+          <div class="action-toast-actions">
+            <button class="compact" @click="applyUpdate" x-text="t('pwa.update')"></button>
+          </div>
+        </section>
+        <section
+          class="action-toast"
           x-show="installSuggestionVisible"
           x-transition
           role="region"
           aria-labelledby="install-suggestion-title"
         >
-          <div class="install-toast-copy">
+          <div class="action-toast-copy">
             <strong id="install-suggestion-title" x-text="t('pwa.installTitle')"></strong>
             <span x-text="t('pwa.installDescription')"></span>
           </div>
-          <div class="install-toast-actions">
+          <div class="action-toast-actions">
             <button class="compact" @click="installApp" x-text="t('pwa.install')"></button>
             <button class="outline compact" @click="dismissInstallSuggestion" x-text="t('pwa.notNow')"></button>
           </div>
