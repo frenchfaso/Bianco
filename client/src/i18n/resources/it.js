@@ -160,6 +160,11 @@ export default {
       export: 'Esporta JSON',
       estimatedSpace: 'Spazio stimato: {{usage}}'
     },
+    account: {
+      title: 'Account',
+      description: 'Termina la sessione autenticata su questo dispositivo.',
+      signOut: 'Esci'
+    },
     privacy: {
       title: 'Privacy e dati',
       description: 'Elimina ricevute, immagini, job e impostazioni soltanto da questo dispositivo.',

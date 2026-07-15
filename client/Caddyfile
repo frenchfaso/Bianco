@@ -1,33 +1,41 @@
 {$BIANCO_SITE_ADDRESS::80} {
-    {$BIANCO_TLS}
+	{$BIANCO_TLS}
 
-    encode zstd gzip
+	encode zstd gzip
 
-    basic_auth {
-        {$BIANCO_AUTH_USER} {$BIANCO_AUTH_PASSWORD_HASH}
-    }
+	header {
+		-Server
+		Content-Security-Policy "default-src 'self'; base-uri 'none'; object-src 'none'; frame-ancestors 'none'; form-action 'self'; script-src 'self' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' blob: data:; connect-src 'self'; worker-src 'self' blob:; manifest-src 'self'"
+		Cross-Origin-Opener-Policy "same-origin"
+		Cross-Origin-Resource-Policy "same-origin"
+		Permissions-Policy "camera=(self), geolocation=(), microphone=()"
+		Referrer-Policy "no-referrer"
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+	}
 
-    header {
-        -Server
-        Content-Security-Policy "default-src 'self'; base-uri 'none'; object-src 'none'; frame-ancestors 'none'; form-action 'self'; script-src 'self' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' blob: data:; connect-src 'self'; worker-src 'self' blob:; manifest-src 'self'"
-        Cross-Origin-Opener-Policy "same-origin"
-        Cross-Origin-Resource-Policy "same-origin"
-        Permissions-Policy "camera=(self), geolocation=(), microphone=()"
-        Referrer-Policy "no-referrer"
-        Strict-Transport-Security "max-age=31536000; includeSubDomains"
-        X-Content-Type-Options "nosniff"
-        X-Frame-Options "DENY"
-    }
+	@protected {
+		not path /auth/*
+	}
 
-    handle /api/* {
-        reverse_proxy api:8000 {
-            header_up Authorization "Bearer {$BIANCO_SYNC_TOKEN}"
-        }
-    }
+	forward_auth @protected api:8000 {
+		uri /auth/check
+	}
 
-    handle {
-        root * /srv
-        try_files {path} /index.html
-        file_server
-    }
+	handle /auth/* {
+		reverse_proxy api:8000
+	}
+
+	handle /api/* {
+		reverse_proxy api:8000 {
+			header_up Authorization "Bearer {$BIANCO_SYNC_TOKEN}"
+		}
+	}
+
+	handle {
+		root * /srv
+		try_files {path} /index.html
+		file_server
+	}
 }

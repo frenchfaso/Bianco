@@ -1,3 +1,3 @@
-from app.routes import ai, files, health, sync
+from app.routes import ai, auth, files, health, sync
 
-__all__ = ["ai", "files", "health", "sync"]
+__all__ = ["ai", "auth", "files", "health", "sync"]

@@ -8,10 +8,7 @@ const tinyPng = Buffer.from(
 const contextDefaults = {
   baseURL: process.env.PLAYWRIGHT_BASE_URL || 'http://localhost',
   locale: 'it-IT',
-  httpCredentials: {
-    username: process.env.BIANCO_TEST_AUTH_USER || 'test-user',
-    password: process.env.BIANCO_TEST_AUTH_PASSWORD || 'test-password'
-  },
+  storageState: '/tmp/bianco-e2e-auth.json',
   ignoreHTTPSErrors: true
 }
 
@@ -53,7 +50,7 @@ async function captureReceipt(page, merchant, total) {
   await page.getByRole('button', { name: 'Salva', exact: true }).click()
   const archive = page.getByRole('region', { name: 'Archivio' })
   await expect(archive).toBeVisible()
-  await archive.getByText('Scontrino senza esercente').click()
+  await archive.getByText('Scontrino senza esercente').last().click()
   const detail = page.getByRole('dialog', { name: 'Controlla lo scontrino' })
   await expect(detail.getByAltText('Fotografia dello scontrino')).toBeVisible()
   await detail.getByLabel('Esercente').fill(merchant)
@@ -68,6 +65,27 @@ async function ensureOfflineControl(page) {
   await page.reload()
   await page.waitForFunction(() => Boolean(navigator.serviceWorker.controller))
 }
+
+test('an unauthenticated browser signs in through the server login page', async ({ browser }) => {
+  const context = await browser.newContext({
+    baseURL: contextDefaults.baseURL,
+    locale: 'it-IT',
+    storageState: { cookies: [], origins: [] },
+    ignoreHTTPSErrors: true
+  })
+  try {
+    const page = await context.newPage()
+    await page.goto('/')
+    await expect(page).toHaveURL(/\/auth\/login\?next=/)
+    await page.getByLabel('Username').fill(process.env.BIANCO_TEST_AUTH_USER || 'test-user')
+    await page.getByLabel('Password').fill(process.env.BIANCO_TEST_AUTH_PASSWORD || 'test-password')
+    await page.getByRole('button', { name: 'Sign in' }).click()
+    await expect(page).toHaveURL('/')
+    await expect(page.getByText('Panoramica', { exact: true }).first()).toBeVisible()
+  } finally {
+    await context.close()
+  }
+})
 
 test('production PWA keeps a receipt available while offline', async ({ page, context }) => {
   await page.goto('/')
@@ -128,6 +146,7 @@ test('receipt images upload by hash and download lazily on another device', asyn
   const origin = new URL(pageA.url()).origin
   await expect.poll(async () => {
     const pull = await pageA.request.post(`${origin}/api/sync/receipts/pull`, {
+      headers: { Origin: origin },
       data: { checkpoint: { sequence: 0 }, batchSize: 500 }
     })
     const documents = (await pull.json()).documents
@@ -273,13 +292,18 @@ test('the only configured model becomes active on a new device and populates a c
   await expect(archive).toBeVisible()
   const receiptId = await page.locator('.app-shell').evaluate((element) => {
     const data = window.Alpine.$data(element)
-    return data.receipts.find((receipt) => receipt.status === 'queued')?.id
+    return data.receipts.find((receipt) => (
+      receipt.imageHash
+      && !receipt.merchantNormalized
+      && ['captured', 'queued', 'processing'].includes(receipt.status)
+    ))?.id
   })
   expect(receiptId).toBeTruthy()
   const origin = new URL(page.url()).origin
   let masterReceipt
   await expect.poll(async () => {
     const response = await page.request.post(`${origin}/api/sync/receipts/pull`, {
+      headers: { Origin: origin },
       data: { checkpoint: { sequence: 0 }, batchSize: 500 }
     })
     masterReceipt = (await response.json()).documents.find((entry) => entry.id === receiptId)
@@ -303,10 +327,12 @@ test('the only configured model becomes active on a new device and populates a c
     updatedByDevice: 'bianco-ai-worker'
   }
   const receiptPush = await page.request.post(`${origin}/api/sync/receipts/push`, {
+    headers: { Origin: origin },
     data: { rows: [{ assumedMasterState: masterReceipt, newDocumentState: extractedReceipt }] }
   })
   expect((await receiptPush.json()).conflicts).toEqual([])
   const itemPush = await page.request.post(`${origin}/api/sync/receipt_items/push`, {
+    headers: { Origin: origin },
     data: { rows: [{ assumedMasterState: null, newDocumentState: {
       id: `ai-item-${Date.now()}`,
       receiptId,

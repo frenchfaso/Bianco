@@ -283,6 +283,14 @@
               <p class="muted" x-text="t('settings.backup.estimatedSpace', { usage: storageUsage })"></p>
             </article>
 
+            <article>
+              <h3 x-text="t('settings.account.title')"></h3>
+              <p x-text="t('settings.account.description')"></p>
+              <form method="post" action="/auth/logout">
+                <button type="submit" class="outline" x-text="t('settings.account.signOut')"></button>
+              </form>
+            </article>
+
             <article class="danger-zone">
               <h3 x-text="t('settings.privacy.title')"></h3>
               <p x-text="t('settings.privacy.description')"></p>

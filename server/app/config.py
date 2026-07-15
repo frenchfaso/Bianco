@@ -13,6 +13,28 @@ class Settings(BaseSettings):
     data_dir: Path = Field(Path("/data"), alias="BIANCO_DATA_DIR")
     sync_token: str = Field(..., min_length=8, alias="BIANCO_SYNC_TOKEN")
     secret_key: str = Field(..., min_length=32, alias="BIANCO_SECRET_KEY")
+    auth_user: str = Field(..., min_length=1, max_length=128, alias="BIANCO_AUTH_USER")
+    auth_password_hash: str = Field(
+        ..., min_length=20, alias="BIANCO_AUTH_PASSWORD_HASH"
+    )
+    session_cookie_secure: bool = Field(
+        True, alias="BIANCO_SESSION_COOKIE_SECURE"
+    )
+    session_max_age_seconds: int = Field(
+        30 * 24 * 60 * 60,
+        ge=300,
+        le=365 * 24 * 60 * 60,
+        alias="BIANCO_SESSION_MAX_AGE_SECONDS",
+    )
+    auth_rate_limit_attempts: int = Field(
+        10, ge=1, le=100, alias="BIANCO_AUTH_RATE_LIMIT_ATTEMPTS"
+    )
+    auth_rate_limit_window_seconds: int = Field(
+        300,
+        ge=10,
+        le=3600,
+        alias="BIANCO_AUTH_RATE_LIMIT_WINDOW_SECONDS",
+    )
     ai_provider: Literal["none", "openai", "openai-compatible", "ollama"] = Field(
         "none", alias="BIANCO_AI_PROVIDER"
     )

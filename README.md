@@ -25,8 +25,8 @@ git clone https://github.com/frenchfaso/Bianco.git
 cd Bianco
 cp .env.example .env
 
-# Generate the password hash, then paste it into .env inside single quotes.
-docker run --rm -it caddy:2.11.4-alpine caddy hash-password
+# Generate an Argon2 password hash and paste it into .env.
+./scripts/hash-password.sh
 
 # Set distinct random values for BIANCO_SYNC_TOKEN and BIANCO_SECRET_KEY.
 docker compose up -d --build
@@ -36,6 +36,10 @@ Open [http://localhost:8080](http://localhost:8080) and sign in with the
 credentials from your `.env` file. Bianco binds to `127.0.0.1` by default so a
 local HTTPS reverse proxy can expose it without also leaving a plain HTTP port
 open on the network.
+
+The production login uses a signed, `HttpOnly`, `SameSite=Strict` session
+cookie. Keep `BIANCO_SESSION_COOKIE_SECURE=true` whenever Bianco is exposed over
+HTTPS; set it to `false` only for an explicitly local plain-HTTP deployment.
 
 ## AI providers
 
@@ -82,8 +86,10 @@ sudo tailscale serve --bg http://127.0.0.1:8080
 
 Set `BIANCO_BIND_ADDRESS=0.0.0.0` only when direct network access is explicitly
 required and protected by a trusted TLS setup. Choose long, independent secrets,
-protect `.env`, keep dependencies updated, and never expose the FastAPI service
-directly to the internet.
+use a strong login password, protect `.env`, keep dependencies updated, and never
+expose the FastAPI service directly to the internet. Caddy delegates access
+checks to FastAPI with its native `forward_auth` directive; the API container
+remains private to the Compose network.
 
 ## License
 

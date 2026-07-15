@@ -160,6 +160,11 @@ export default {
       export: 'Export JSON',
       estimatedSpace: 'Estimated space: {{usage}}'
     },
+    account: {
+      title: 'Account',
+      description: 'End the authenticated session on this device.',
+      signOut: 'Sign out'
+    },
     privacy: {
       title: 'Privacy and data',
       description: 'Delete receipts, images, jobs and settings from this device only.',

@@ -23,6 +23,9 @@ services:
       BIANCO_DATA_DIR: /tmp/bianco-test-data
       BIANCO_SYNC_TOKEN: test-token
       BIANCO_SECRET_KEY: test-secret-key-that-is-at-least-32-characters
+      BIANCO_AUTH_USER: test-user
+      BIANCO_AUTH_PASSWORD_HASH: $$2y$$05$$wIb9ZBmxVX2BJzYghjpQX.J2xJpUcYs78ZZFa0DnH52HukX7o0SfG
+      BIANCO_SESSION_COOKIE_SECURE: "false"
       BIANCO_AI_PROVIDER: none
       BIANCO_AI_WORKER_ENABLED: "false"
     command: ["python", "-m", "pytest", "-q"]
@@ -36,6 +39,9 @@ services:
       BIANCO_DATA_DIR: /data
       BIANCO_SYNC_TOKEN: test-token
       BIANCO_SECRET_KEY: test-secret-key-that-is-at-least-32-characters
+      BIANCO_AUTH_USER: test-user
+      BIANCO_AUTH_PASSWORD_HASH: $$2y$$05$$wIb9ZBmxVX2BJzYghjpQX.J2xJpUcYs78ZZFa0DnH52HukX7o0SfG
+      BIANCO_SESSION_COOKIE_SECURE: "false"
       BIANCO_AI_PROVIDER: none
       BIANCO_AI_WORKER_ENABLED: "false"
     healthcheck:
@@ -55,8 +61,6 @@ services:
     environment:
       BIANCO_SITE_ADDRESS: :80
       BIANCO_SYNC_TOKEN: test-token
-      BIANCO_AUTH_USER: test-user
-      BIANCO_AUTH_PASSWORD_HASH: $$2y$$05$$wIb9ZBmxVX2BJzYghjpQX.J2xJpUcYs78ZZFa0DnH52HukX7o0SfG
     depends_on:
       test-api:
         condition: service_healthy

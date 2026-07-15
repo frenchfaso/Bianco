@@ -7,9 +7,10 @@ from contextlib import asynccontextmanager
 from contextlib import suppress
 
 from fastapi import FastAPI, Request
+from starlette.middleware.sessions import SessionMiddleware
 
 from app.config import get_settings
-from app.routes import ai, files, health, sync
+from app.routes import ai, auth, files, health, sync
 from app.services.ai_queue import run_ai_worker
 
 logger = logging.getLogger("bianco")
@@ -45,6 +46,16 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+settings = get_settings()
+app.add_middleware(
+    SessionMiddleware,
+    secret_key=settings.secret_key,
+    session_cookie="bianco_session",
+    max_age=settings.session_max_age_seconds,
+    same_site="strict",
+    https_only=settings.session_cookie_secure,
+)
+
 
 @app.middleware("http")
 async def structured_request_log(request: Request, call_next):
@@ -73,6 +84,7 @@ async def structured_request_log(request: Request, call_next):
         )
 
 
+app.include_router(auth.router)
 app.include_router(health.router)
 app.include_router(sync.router)
 app.include_router(files.router)
