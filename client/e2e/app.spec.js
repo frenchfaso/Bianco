@@ -74,6 +74,10 @@ test('an unauthenticated browser signs in through the server login page', async 
     ignoreHTTPSErrors: true
   })
   try {
+    const serviceWorker = await context.request.get('/sw.js', { maxRedirects: 0 })
+    expect(serviceWorker.status()).toBe(200)
+    expect(serviceWorker.headers()['content-type']).toContain('javascript')
+
     const page = await context.newPage()
     await page.goto('/')
     await expect(page).toHaveURL(/\/auth\/login\?next=/)

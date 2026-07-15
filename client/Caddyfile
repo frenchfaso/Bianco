@@ -16,7 +16,7 @@
 	}
 
 	@protected {
-		not path /auth/*
+		not path /auth/* /assets/* /sw.js /workbox-* /manifest.webmanifest /icon.svg /theme-init.js /index.html
 	}
 
 	forward_auth @protected api:8000 {
