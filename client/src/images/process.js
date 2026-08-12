@@ -1,3 +1,6 @@
+import { preprocessReceiptDocument } from './document-preprocess.js'
+export { detectReceiptDocument, sanitizeDocumentQuad } from './document-preprocess.js'
+
 async function decodeImage(file) {
   if ('createImageBitmap' in window) {
     try {
@@ -25,7 +28,7 @@ function outputSize(width, height, maximum) {
   }
 }
 
-async function renderJpeg(source, maximum, quality) {
+async function renderImage(source, maximum, mimeType, quality) {
   const originalWidth = source.width || source.naturalWidth
   const originalHeight = source.height || source.naturalHeight
   const size = outputSize(originalWidth, originalHeight, maximum)
@@ -37,8 +40,9 @@ async function renderJpeg(source, maximum, quality) {
   context.fillRect(0, 0, size.width, size.height)
   context.drawImage(source, 0, 0, size.width, size.height)
   const blob = await new Promise((resolve, reject) => {
-    canvas.toBlob((value) => value ? resolve(value) : reject(new Error('JPEG encoding failed')), 'image/jpeg', quality)
+    canvas.toBlob((value) => value ? resolve(value) : reject(new Error('Image encoding failed')), mimeType, quality)
   })
+  if (blob.type !== mimeType) throw new Error(`Browser stopped supporting ${mimeType}`)
   return { blob, ...size }
 }
 
@@ -47,18 +51,26 @@ async function sha256(blob) {
   return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('')
 }
 
-export async function processReceiptImage(file) {
-  const source = await decodeImage(file)
+export async function processReceiptImage(file, options = {}) {
+  const full = await preprocessReceiptDocument(file, {
+    targetLongEdge: 3200,
+    imageQuality: 0.9,
+    preferredMimeType: 'image/webp',
+    fallbackMimeType: 'image/jpeg',
+    sourceQuad: options.sourceQuad,
+    signal: options.signal
+  })
+  const source = await decodeImage(full.blob)
   try {
-    const full = await renderJpeg(source, 2200, 0.82)
-    const thumbnail = await renderJpeg(source, 320, 0.78)
+    const thumbnail = await renderImage(source, 1280, full.mimeType, 0.92)
     return {
       full: full.blob,
       thumbnail: thumbnail.blob,
       width: full.width,
       height: full.height,
       hash: await sha256(full.blob),
-      mimeType: 'image/jpeg'
+      mimeType: full.mimeType,
+      transform: full.transform
     }
   } finally {
     source.close?.()

@@ -1,5 +1,7 @@
 .env
+/AGENTS.md
 .DS_Store
+**/._*
 data/*
 !data/.gitkeep
 backups/
@@ -7,8 +9,8 @@ client/node_modules/
 client/dist/
 client/coverage/
 server/.pytest_cache/
-server/__pycache__/
-server/**/*.pyc
+**/__pycache__/
+**/*.pyc
 server/.coverage
 test-results/
 playwright-report/

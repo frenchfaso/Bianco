@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-destination=${1:-"./backups/bianco-$(date +%Y%m%d-%H%M%S).sqlite"}
+destination=${1:-"./backups/bianco-$(date +%Y%m%d-%H%M%S).tar.gz"}
 filename=$(basename "$destination")
 mkdir -p "$(dirname "$destination")"
 

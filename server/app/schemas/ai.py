@@ -61,6 +61,7 @@ class InsightSnapshot(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     locale: SupportedLocale = "en-GB"
+    currency: str = Field("EUR", pattern=r"^[A-Z]{3}$")
     period: dict[str, Any]
     total: int
     previousTotal: int
@@ -77,7 +78,9 @@ class GeneratedInsights(AiModel):
 
 class ProviderConfigurationUpdate(AiModel):
     base_url: str = Field("", alias="baseUrl", max_length=2048)
-    model: str = Field("", max_length=255)
+    # Accepted for compatibility with older clients, but model selection is
+    # backend-only and the value is intentionally ignored.
+    model: str | None = Field(None, max_length=255)
     api_key: str | None = Field(None, alias="apiKey", max_length=4096)
     clear_api_key: bool = Field(False, alias="clearApiKey")
 
@@ -130,5 +133,14 @@ class ProviderConfigurationUpdate(AiModel):
 
     @field_validator("model")
     @classmethod
-    def normalize_model(cls, value: str) -> str:
+    def normalize_model(cls, value: str | None) -> str | None:
+        return value.strip() if value is not None else None
+
+
+class ProviderModelSelection(AiModel):
+    model: str = Field(min_length=1, max_length=255)
+
+    @field_validator("model")
+    @classmethod
+    def normalize_selected_model(cls, value: str) -> str:
         return value.strip()

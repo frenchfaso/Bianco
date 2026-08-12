@@ -5,3 +5,4 @@ tests
 e2e
 test-results
 playwright-report
+**/._*

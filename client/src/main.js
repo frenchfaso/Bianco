@@ -16,10 +16,22 @@ const savedLanguage = (() => {
 
 await initI18n({ preference: savedLanguage })
 
-const serviceWorkerUpdateIntervalMs = 60 * 60 * 1000
+const serviceWorkerUpdateIntervalMs = 5 * 60 * 1000
+let registeredServiceWorker = null
+let registeredServiceWorkerUrl = ''
+
+function announceServiceWorkerUpdate() {
+  window.biancoUpdateAvailable = true
+  window.dispatchEvent(new CustomEvent('bianco-update'))
+}
 
 async function checkForServiceWorkerUpdate(swUrl, registration) {
-  if (!registration || registration.installing || registration.waiting || !navigator.onLine) return
+  if (!registration || !navigator.onLine) return
+  if (registration.waiting) {
+    announceServiceWorkerUpdate()
+    return
+  }
+  if (registration.installing) return
   try {
     const response = await fetch(swUrl, {
       cache: 'no-store',
@@ -41,20 +53,38 @@ let updateServiceWorker = null
 updateServiceWorker = registerSW({
   immediate: true,
   onNeedRefresh() {
-    window.dispatchEvent(new CustomEvent('bianco-update'))
+    announceServiceWorkerUpdate()
   },
   onOfflineReady() {
     window.dispatchEvent(new CustomEvent('bianco-offline-ready'))
   },
   onRegisteredSW(swUrl, registration) {
     if (!registration) return
+    registeredServiceWorker = registration
+    registeredServiceWorkerUrl = swUrl
+    void checkForServiceWorkerUpdate(swUrl, registration)
     window.setInterval(() => {
       void checkForServiceWorkerUpdate(swUrl, registration)
     }, serviceWorkerUpdateIntervalMs)
   }
 })
 
-window.biancoApplyUpdate = () => updateServiceWorker?.(true)
+function checkRegisteredServiceWorker() {
+  if (!registeredServiceWorker || !registeredServiceWorkerUrl) return
+  void checkForServiceWorkerUpdate(registeredServiceWorkerUrl, registeredServiceWorker)
+}
+
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible') checkRegisteredServiceWorker()
+})
+window.addEventListener('pageshow', checkRegisteredServiceWorker)
+window.addEventListener('online', checkRegisteredServiceWorker)
+window.addEventListener('focus', checkRegisteredServiceWorker)
+
+window.biancoApplyUpdate = () => {
+  window.biancoUpdateAvailable = false
+  return updateServiceWorker?.(true)
+}
 window.Alpine = Alpine
 Alpine.data('biancoApp', biancoApp)
 Alpine.start()

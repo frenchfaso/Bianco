@@ -1,0 +1,75 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Bianco WebGPU preprocessing smoke test</title>
+<pre id="result">pending</pre>
+<script type="module">
+  import { preprocessReceiptDocument } from '../src/images/document-preprocess.js'
+
+  const canvas = document.createElement('canvas')
+  canvas.width = 1600
+  canvas.height = 2200
+  const context = canvas.getContext('2d')
+  context.fillStyle = '#26302f'
+  context.fillRect(0, 0, canvas.width, canvas.height)
+  context.beginPath()
+  context.moveTo(310, 140)
+  context.lineTo(1360, 270)
+  context.lineTo(1260, 2060)
+  context.lineTo(210, 1900)
+  context.closePath()
+  context.fillStyle = '#f7f5ef'
+  context.fill()
+  context.strokeStyle = '#202020'
+  context.lineWidth = 18
+  for (let y = 430; y < 1650; y += 130) {
+    context.beginPath()
+    context.moveTo(410, y)
+    context.lineTo(1160, y + 60)
+    context.stroke()
+  }
+  const source = await new Promise((resolve, reject) => {
+    canvas.toBlob(
+      (blob) => blob ? resolve(blob) : reject(new Error('fixture encoding failed')),
+      'image/jpeg',
+      0.95
+    )
+  })
+  try {
+    const processed = await preprocessReceiptDocument(source, {
+      targetLongEdge: 1600,
+      imageQuality: 0.9,
+      preferredMimeType: 'image/webp',
+      fallbackMimeType: 'image/jpeg'
+    })
+    const bitmap = await createImageBitmap(processed.blob)
+    const checkCanvas = new OffscreenCanvas(64, 64)
+    const checkContext = checkCanvas.getContext('2d', { willReadFrequently: true })
+    checkContext.drawImage(bitmap, 0, 0, 64, 64)
+    bitmap.close()
+    const pixels = checkContext.getImageData(0, 0, 64, 64).data
+    let brightPixels = 0
+    let darkPixels = 0
+    for (let offset = 0; offset < pixels.length; offset += 4) {
+      const luminance = 0.2126 * pixels[offset]
+        + 0.7152 * pixels[offset + 1]
+        + 0.0722 * pixels[offset + 2]
+      if (luminance > 210) brightPixels += 1
+      if (luminance < 80) darkPixels += 1
+    }
+    document.querySelector('#result').textContent = JSON.stringify({
+      mimeType: processed.mimeType,
+      width: processed.width,
+      height: processed.height,
+      transform: processed.transform,
+      webGpuAvailable: Boolean(navigator.gpu),
+      visual: {
+        brightRatio: brightPixels / (64 * 64),
+        darkRatio: darkPixels / (64 * 64)
+      }
+    })
+  } catch (error) {
+    document.querySelector('#result').textContent = JSON.stringify({
+      error: String(error?.stack || error)
+    })
+  }
+</script>

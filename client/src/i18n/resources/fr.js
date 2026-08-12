@@ -36,7 +36,11 @@ export default {
     title: 'Vue d’ensemble',
     periodSpend: 'Dépenses de la période',
     previousComparison: 'par rapport à la période précédente',
+    noPreviousComparison: 'Aucune période précédente comparable pour le moment',
     savedReceipts: 'Tickets enregistrés',
+    needsAttention: 'À vérifier',
+    reviewReceipts: 'Vérifier les tickets',
+    details: 'Plus de détails',
     pendingActivities_one: '{{count}} tâche en attente',
     pendingActivities_other: '{{count}} tâches en attente',
     categories: {
@@ -44,12 +48,22 @@ export default {
       chartAria: 'Dépenses par catégorie',
       empty: 'Les données de ce mois apparaîtront ici.'
     },
+    spendingTrend: {
+      title: 'Évolution des dépenses',
+      lastPeriods: '{{count}} dernières périodes',
+      periodAria: 'Regroupement temporel des dépenses',
+      weekly: 'Semaines',
+      monthly: 'Mois',
+      chartAria: 'Dépenses dans le temps',
+      empty: 'Les dépenses apparaîtront ici.'
+    },
     insights: {
       title: 'Points marquants',
-      local: 'Calcul local',
       thresholdDescription: 'Des variations d’au moins {{amount}} et {{percent}} % sont nécessaires.',
-      aiAggregatedOnly: 'Résumé IA · données agrégées uniquement',
-      generate: 'Générer le résumé'
+      empty: 'Aucune évolution notable pour le moment.',
+      aiAggregatedOnly: 'Synthèse',
+      generate: 'Approfondir',
+      refresh: 'Actualiser la synthèse'
     },
     merchants: {
       title: 'Commerçants',
@@ -100,14 +114,21 @@ export default {
     eyebrow: 'Enregistrement local immédiat',
     title: 'Nouveau ticket',
     frameTitle: 'Cadrez le ticket en entier',
-    frameDescription: 'Nous corrigeons son orientation et sa taille, puis conservons une copie JPEG de moins de 2200 px.',
+    frameDescription: 'Nous redressons et recadrons prudemment le ticket, en préservant les détails jusqu’à 3200 px.',
     openCamera: 'Ouvrir l’appareil photo',
     chooseGallery: 'Choisir dans la galerie',
     manual: 'Saisir sans photo',
+    preparingPreview: 'Détection des bords du ticket…',
+    applyingCorrection: 'Recadrage et correction de la perspective…',
     previewAlt: 'Aperçu du ticket',
+    cropDetected: 'Bords détectés automatiquement',
+    cropFallback: 'Placez le recadrage sur le ticket',
+    cropHint: 'Si nécessaire, déplacez les quatre coins : la loupe affiche automatiquement le détail.',
+    cropInvalid: 'Le contour se croise ou est trop petit. Ajustez les coins pour continuer.',
+    cropEditorAria: 'Correction du recadrage du ticket',
+    cropCornerAria: 'Coin du recadrage {{index}}',
     retry: 'Reprendre',
-    save: 'Enregistrer',
-    privacyNote: 'La photo reste dans la base de données locale. Elle est envoyée au backend uniquement si vous configurez et activez les services associés.'
+    confirm: 'Confirmer'
   },
   settings: {
     eyebrow: 'Local par défaut',
@@ -134,6 +155,18 @@ export default {
       title: 'Intelligence artificielle',
       unavailableOffline: 'Les fournisseurs seront disponibles lorsque Bianco sera de nouveau en ligne.',
       provider: 'Fournisseur IA',
+      chatgptDescription: 'Utilisez les modèles Codex inclus dans votre abonnement ChatGPT. Aucune clé API ni facturation API n’est utilisée.',
+      connectChatgpt: 'Connecter ChatGPT',
+      deviceCode: 'Code OpenAI à usage unique',
+      openOpenAi: 'Ouvrir OpenAI',
+      copyCode: 'Copier le code',
+      deviceCodeHint: 'Connectez-vous à OpenAI dans la page qui s’ouvre et saisissez ce code. Revenez ensuite dans Bianco.',
+      connectedPlan: 'Offre connectée :',
+      model: 'Modèle Codex',
+      loadingModels: 'Chargement des modèles disponibles…',
+      chooseModel: 'Choisir un modèle',
+      recommended: 'Recommandé',
+      disconnectChatgpt: 'Déconnecter ChatGPT',
       endpoint: 'Adresse du fournisseur',
       ollamaEndpointHint: 'L’adresse doit être accessible depuis le conteneur API. Utilisez l’IP du serveur Ollama ou un nom d’hôte pris en charge par votre environnement de conteneurs.',
       apiKey: 'Clé API',
@@ -141,12 +174,8 @@ export default {
       savedKeyPlaceholder: 'Clé enregistrée',
       newKeyPlaceholder: 'Saisissez la clé API',
       removeSavedKey: 'Supprimer la clé enregistrée',
-      model: 'Modèle',
-      modelSearching: 'Recherche des modèles…',
-      modelChoose: 'Choisir un modèle',
-      modelNone: 'Aucun modèle disponible',
       active: 'En cours d’utilisation :',
-      securityNote: 'Les points d’accès et les modèles sont vérifiés automatiquement. Les clés API sont chiffrées sur le serveur et effacées de la mémoire du formulaire après l’enregistrement.'
+      securityNote: 'Les identifiants ChatGPT restent sur le backend et ne sont jamais envoyés à la PWA. Les clés OpenAI-compatible sont chiffrées sur le serveur et effacées de la mémoire du formulaire.'
     },
     insights: {
       title: 'Analyses',
@@ -155,20 +184,21 @@ export default {
       apply: 'Appliquer les seuils'
     },
     backup: {
-      title: 'Sauvegarde locale',
+      title: 'Exporter cet appareil',
       includeImages: 'Inclure les images dans le JSON',
       export: 'Exporter le JSON',
-      estimatedSpace: 'Espace estimé : {{usage}}'
+      estimatedSpace: 'Usage local : {{usage}}. L’export contient les données, pas les images ni une sauvegarde serveur restaurable.'
     },
     account: {
       title: 'Compte',
       description: 'Terminez la session authentifiée sur cet appareil.',
-      signOut: 'Se déconnecter'
+      signOut: 'Se déconnecter',
+      signOutAndDelete: 'Se déconnecter et supprimer les données de cet appareil'
     },
     privacy: {
       title: 'Confidentialité et données',
       description: 'Supprimez les tickets, images, tâches et paramètres de cet appareil uniquement.',
-      deleteAll: 'Supprimer toutes les données locales'
+      deleteAll: 'Réinitialiser cet appareil'
     }
   },
   provider: {
@@ -178,30 +208,35 @@ export default {
       openaiCompatible: 'Autre / compatible OpenAI'
     },
     enterEndpoint: 'Saisissez l’adresse du fournisseur.',
-    enterApiKey: 'Saisissez la clé API pour charger les modèles.',
+    enterApiKey: 'Saisissez la clé API pour connecter le fournisseur.',
+    connectChatgpt: 'Connectez votre abonnement ChatGPT pour continuer.',
+    startingChatgptLogin: 'Démarrage de la connexion OpenAI sécurisée…',
+    waitingChatgptLogin: 'En attente de l’autorisation OpenAI…',
+    chooseModel: 'Choisissez un modèle Codex disponible pour votre compte.',
+    noModels: 'Aucun modèle Codex compatible image n’est disponible pour ce compte.',
+    modelsUnavailable: 'La liste des modèles Codex est actuellement indisponible.',
+    activatingModel: 'Activation du modèle sélectionné…',
+    chatgptLoginFailed: 'La connexion à ChatGPT n’a pas pu aboutir.',
+    chatgptLoginExpired: 'Le code OpenAI a expiré. Démarrez une nouvelle connexion.',
+    chatgptLogoutFailed: 'ChatGPT n’a pas pu être déconnecté.',
     checking: 'Vérification de la connexion…',
-    checkingModels: 'Vérification de la connexion et recherche des modèles…',
-    modelsAvailable_one: '{{count}} modèle disponible.',
-    modelsAvailable_other: '{{count}} modèles disponibles.',
-    modelsActive_one: '{{provider}} · {{model}} est actif. {{count}} modèle disponible.',
-    modelsActive_other: '{{provider}} · {{model}} est actif. {{count}} modèles disponibles.',
-    selectAvailable_one: '{{count}} modèle disponible. Sélectionnez-le pour l’activer immédiatement.',
-    selectAvailable_other: '{{count}} modèles disponibles. Choisissez-en un pour l’activer immédiatement.',
-    noModels: 'La connexion fonctionne, mais le fournisseur ne propose aucun modèle.',
+    providerActive: '{{provider}} est connecté et actif.',
+    backendUnavailable: 'Le fournisseur ou la configuration IA du backend est indisponible.',
     unreachable: 'Le fournisseur est inaccessible. Vérifiez l’adresse et réessayez.',
-    activating: 'Activation du modèle…',
-    modelActive: '{{provider}} · {{model}} est désormais le modèle de Bianco.',
-    modelUnavailable: 'Le modèle sélectionné n’est pas disponible.',
-    activationFailed: 'Le modèle n’a pas pu être activé. Vérifiez la configuration et réessayez.'
+    activationFailed: 'Le fournisseur n’a pas pu être activé. Vérifiez la configuration et réessayez.'
   },
   receiptDetail: {
     title: 'Vérifier le ticket',
     close: 'Fermer',
     photoAlt: 'Photo du ticket de caisse',
-    fullImageStored: 'Image complète conservée localement',
     openFullImage: 'Ouvrir l’image complète',
+    loadingFullImage: 'Chargement de l’image complète…',
+    fullImageTitle: 'Image complète du ticket',
+    closeFullImage: 'Fermer l’image complète',
     noLocalImage: 'Aucune image locale',
     retryProcessing: 'Relancer le traitement',
+    reanalyze: 'Réanalyser avec l’IA',
+    magnifierHint: 'Déplacez la souris sur l’image ; sur écran tactile, maintenez et faites glisser.',
     merchant: 'Commerçant',
     merchantPlaceholder: 'Nom du commerçant',
     date: 'Date',
@@ -218,6 +253,7 @@ export default {
     quantityAria: 'Quantité {{index}}',
     unitPriceAria: 'Prix unitaire {{index}}',
     productTotalAria: 'Total du produit {{index}}',
+    productCategoryAria: 'Catégorie du produit {{index}}',
     deleteProductAria: 'Supprimer le produit {{index}}',
     noProducts: 'Aucun produit. Vous pouvez les ajouter manuellement.',
     delete: 'Supprimer',
@@ -268,13 +304,20 @@ export default {
     analysisCompleted: 'Analyse terminée : vérifiez le résultat.',
     thresholdsUpdated: 'Seuils mis à jour.',
     summarySaved: 'Résumé enregistré localement.',
-    backupCreated: 'Sauvegarde JSON créée.'
+    updateDeferred: 'Mise à jour prête. Terminez la modification en cours, puis actualisez.',
+    backupCreated: 'Export JSON créé.',
+    codeCopied: 'Code OpenAI copié.',
+    chatgptDisconnected: 'ChatGPT déconnecté.'
   },
   confirm: {
+    reanalyzeReceiptTitle: 'Réanalyser le ticket',
+    reanalyzeReceipt: 'Traiter à nouveau la photo avec le modèle IA actif ? Les données extraites et les corrections confirmées seront remplacées par le nouveau résultat.',
     deleteReceiptTitle: 'Supprimer le ticket',
     deleteReceipt: 'Supprimer ce ticket et son image locale ?',
     deleteAllDataTitle: 'Supprimer les données locales',
-    deleteAllData: 'Supprimer définitivement toutes les données de Bianco de cet appareil ?'
+    deleteAllData: 'Supprimer définitivement toutes les données de Bianco de cet appareil ?',
+    logoutAndDeleteTitle: 'Se déconnecter et supprimer les données locales',
+    logoutAndDelete: 'Se déconnecter et supprimer définitivement de cet appareil les données et images des tickets ? Les données du serveur ne seront pas supprimées.'
   },
   warning: {
     incompleteImageSave: 'L’image n’a pas été entièrement enregistrée.'
@@ -283,7 +326,9 @@ export default {
     databaseOpen: 'L’archive locale n’a pas pu être ouverte.',
     secureContextRequired: 'Ouvrez Bianco via HTTPS ou localhost pour utiliser l’archive locale et les fonctions hors ligne.',
     invalidImage: 'Choisissez un fichier image.',
+    imageTooLarge: 'Cette image dépasse 10 Mo. Choisissez une photo plus petite.',
     saveFailed: 'Les modifications n’ont pas pu être enregistrées.',
+    receiptConflict: 'Ce reçu a été modifié sur un autre appareil. L’enregistrement a été interrompu pour éviter de l’écraser ; vos modifications restent visibles ici.',
     imageUnavailable: 'L’image n’est pas disponible.',
     invalidConfiguration: 'La configuration n’est pas valide.',
     backendUnavailable: 'Le backend de Bianco est inaccessible.',
@@ -291,6 +336,7 @@ export default {
     backupFailed: 'La sauvegarde n’a pas pu être créée.',
     receiptImageMissing: 'L’image du ticket est manquante.',
     fullReceiptImageUnavailable: 'L’image complète du ticket n’est pas disponible.',
+    logoutFailed: 'La déconnexion n’a pas pu être finalisée. Les données locales ont été supprimées.',
     imageMetadataMissing: 'Les informations de l’image sont manquantes.',
     fullImageAttachmentMissing: 'L’image complète est manquante.',
     receiptNotFound: 'Le ticket est introuvable.',

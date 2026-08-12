@@ -2,7 +2,7 @@ import { defineConfig } from 'eslint/config'
 
 export default defineConfig([
   {
-    ignores: ['dist/**', 'coverage/**', 'node_modules/**', 'playwright-report/**'],
+    ignores: ['dist/**', 'coverage/**', 'node_modules/**', 'playwright-report/**', '**/._*'],
   },
   {
     files: ['**/*.js'],
@@ -12,7 +12,9 @@ export default defineConfig([
       globals: {
         Alpine: 'readonly',
         AbortController: 'readonly',
+        AbortSignal: 'readonly',
         CustomEvent: 'readonly',
+        DOMException: 'readonly',
         FormData: 'readonly',
         Headers: 'readonly',
         Blob: 'readonly',
@@ -21,9 +23,11 @@ export default defineConfig([
         File: 'readonly',
         HTMLCanvasElement: 'readonly',
         Image: 'readonly',
+        ImageData: 'readonly',
         URL: 'readonly',
         TextDecoder: 'readonly',
         TextEncoder: 'readonly',
+        Worker: 'readonly',
         btoa: 'readonly',
         console: 'readonly',
         createImageBitmap: 'readonly',
@@ -34,6 +38,7 @@ export default defineConfig([
         localStorage: 'readonly',
         navigator: 'readonly',
         process: 'readonly',
+        self: 'readonly',
         window: 'readonly',
       },
     },

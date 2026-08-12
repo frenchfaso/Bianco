@@ -1,12 +1,15 @@
 import { generatedInsightsSchema } from './ai/schemas.js'
 import { downloadRemoteImage, recoverInterruptedJobs, runPendingJobs } from './ai/jobs.js'
 import { getDatabase, deleteLocalDatabase } from './db/index.js'
-import { processReceiptImage } from './images/process.js'
+import { detectReceiptDocument, processReceiptImage, sanitizeDocumentQuad } from './images/process.js'
+import { fitCropMagnifierSize, placeCropMagnifier } from './images/crop-magnifier.js'
 import { getImageUrl } from './images/repository.js'
 import { i18next, localeForLanguage, resolveLanguage, setLanguage } from './i18n/index.js'
 import { computeInsights, insightSnapshot, UNKNOWN_MERCHANT_ID } from './insights/compute.js'
+import { isSummaryCurrent, summaryDatasetHash } from './insights/summary-cache.js'
 import { categories, categoryMap } from './stores/categories.js'
 import {
+  applyReceiptAggregate,
   createCapturedReceipt,
   createManualReceipt,
   deleteReceipt,
@@ -17,15 +20,27 @@ import {
   updateReceipt
 } from './stores/receipts.js'
 import { apiFetch } from './sync/api.js'
+import {
+  buildReceiptAggregateUpdate,
+  getReceiptAggregate,
+  isReceiptAggregateConflict,
+  putReceiptAggregate,
+  receiptAggregateEditableSnapshot,
+  receiptAggregateMatches
+} from './sync/receipt-aggregates.js'
 import { resyncNow, startReplication } from './sync/replication.js'
 import { downloadBackup } from './utils/backup.js'
-import { createId } from './utils/ids.js'
+import { createId, getDeviceId } from './utils/ids.js'
 
 const emptyInsights = computeInsights([], [])
 const THEME_STORAGE_KEY = 'bianco-theme'
 const LANGUAGE_STORAGE_KEY = 'bianco-language'
 const INSTALL_DISMISSED_STORAGE_KEY = 'bianco-install-dismissed-at'
 const INSTALL_DISMISSAL_TTL_MS = 7 * 24 * 60 * 60 * 1000
+const SUMMARY_PROMPT_VERSION = 'insights-v2-major-units'
+const INSIGHT_MINIMUM_PERCENT = 20
+const INSIGHT_MINIMUM_MINOR = 1000
+const MAX_CAPTURE_BYTES = 10 * 1024 * 1024
 const themePreferences = new Set(['auto', 'light', 'dark'])
 const languagePreferences = new Set(['auto', 'en', 'it', 'de', 'es', 'fr'])
 const categoryTranslationKeys = {
@@ -76,10 +91,18 @@ function toEuro(value) {
   return value == null ? '' : (value / 100).toFixed(2)
 }
 
-async function datasetHash(value) {
-  const bytes = new TextEncoder().encode(JSON.stringify(value))
-  const digest = await crypto.subtle.digest('SHA-256', bytes)
-  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('')
+function pointerIdentity(event) {
+  return event?.pointerId ?? 'mouse'
+}
+
+function dominantItemCategory(items) {
+  const totals = new Map()
+  for (const item of items) {
+    const categoryId = categoryMap[item.categoryId] ? item.categoryId : 'other'
+    const weight = Math.max(1, Number(item.totalPriceMinor) || toMinor(item.totalPriceEuro) || 0)
+    totals.set(categoryId, (totals.get(categoryId) || 0) + weight)
+  }
+  return [...totals.entries()].sort((left, right) => right[1] - left[1])[0]?.[0] || 'other'
 }
 
 export function biancoApp() {
@@ -91,60 +114,108 @@ export function biancoApp() {
     settingsTrigger: null,
     online: navigator.onLine,
     syncStatus: 'disabled',
+    receiptsReady: false,
+    itemsReady: false,
+    summaryValidationRevision: 0,
+    aiSummaryCurrent: false,
     receipts: [],
     items: [],
     jobs: [],
     insights: emptyInsights,
     categories,
     providers: [],
-    providerModels: [],
     providerBusy: false,
     providerRequestId: 0,
+    providersRefreshRequestId: 0,
     providerConnectionState: 'idle',
     providerConnectionMessageKey: '',
     providerConnectionMessageOptions: {},
+    openAiModels: [],
+    openAiModelsLoading: false,
+    openAiModelsRequestId: 0,
+    openAiLogin: null,
+    openAiLoginPollTimer: null,
     providerForm: {
       id: '',
       baseUrl: '',
-      model: '',
       apiKey: '',
-      clearApiKey: false
+      clearApiKey: false,
+      model: ''
     },
-    chart: null,
+    categoryChart: null,
+    spendingChart: null,
     chartRenderRevision: 0,
+    spendingGranularity: 'month',
     languageRevision: 0,
     resolvedLanguage: resolveLanguage(),
     languagePreference: 'auto',
     themePreference: 'auto',
     themeMediaQuery: null,
     settings: {
-      selectedAiProvider: null,
       locale: localeForLanguage(resolveLanguage()),
       languagePreference: 'auto',
       themePreference: 'auto',
       defaultCurrency: 'EUR',
-      insightMinimumPercent: 20,
-      insightMinimumMinor: 1000,
       aiSummary: null
     },
-    settingsForm: {
-      insightMinimumPercent: 20,
-      insightMinimumEuro: 10
-    },
     filters: { search: '', category: '', period: 'all' },
-    capture: { file: null, previewUrl: null, processing: false },
-    detail: { open: false, id: null, form: {}, items: [], imageUrl: null, fullLoaded: false, dirty: false },
+    capture: {
+      file: null,
+      processed: null,
+      originalUrl: null,
+      width: 0,
+      height: 0,
+      quad: null,
+      detected: false,
+      confidence: 0,
+      draggingCorner: null,
+      processing: false,
+      saving: false
+    },
+    captureRequestId: 0,
+    captureAbortController: null,
+    cropLens: {
+      active: false,
+      pointerId: null,
+      left: 0,
+      top: 0,
+      size: 156,
+      backgroundPosition: 'center',
+      backgroundSize: 'auto'
+    },
+    detail: {
+      open: false,
+      id: null,
+      form: {},
+      items: [],
+      imageUrl: null,
+      fullImageUrl: null,
+      fullLoading: false,
+      lens: {
+        active: false,
+        pointerId: null,
+        left: 0,
+        top: 0,
+        backgroundPosition: 'center',
+        backgroundSize: 'auto'
+      },
+      baseRevision: null,
+      baseAggregateSnapshot: null,
+      dirty: false
+    },
     detailRefreshTimer: null,
+    detailRefreshPending: false,
+    imageViewerOpen: false,
+    imageViewerReturnFocus: null,
     toast: { message: '', type: 'success' },
     toastTimer: null,
-    includeImagesInBackup: false,
     storageUsage: '—',
     installPrompt: null,
     installSuggestionVisible: false,
     confirmation: { title: '', message: '', confirmLabel: '', destructive: false },
     confirmationResolver: null,
     confirmationReturnFocus: null,
-    updateAvailable: false,
+    updateAvailable: Boolean(window.biancoUpdateAvailable),
 
     async init() {
       this.themeMediaQuery = window.matchMedia('(prefers-color-scheme: dark)')
@@ -173,6 +244,7 @@ export function biancoApp() {
         observeReceipts(database, (receipts) => {
           const previousStatuses = new Map(this.receipts.map((receipt) => [receipt.id, receipt.status]))
           this.receipts = receipts
+          this.receiptsReady = true
           this.recompute()
           if (receipts.some((receipt) =>
             receipt.status === 'needs_review' && ['queued', 'processing'].includes(previousStatuses.get(receipt.id))
@@ -181,6 +253,7 @@ export function biancoApp() {
         })
         observeItems(database, (items) => {
           this.items = items
+          this.itemsReady = true
           this.recompute()
           this.scheduleDetailRefresh()
         })
@@ -191,21 +264,41 @@ export function biancoApp() {
           if (document) void this.setSettings(document.toJSON())
         })
         await recoverInterruptedJobs(database)
-        await startReplication(database, (status) => { this.syncStatus = status })
-        await this.refreshProviders(false)
+        await startReplication(
+          database,
+          (status) => { this.syncStatus = status },
+          (event) => {
+            if (['REMOTE_CONNECTED', 'AI_CONFIGURATION_CHANGED'].includes(event)) {
+              void this.refreshProviders(false, true)
+            }
+          }
+        )
+        await this.refreshProviders(false, true)
         void this.runJobs()
         void this.updateStorageUsage()
       } catch {
         this.notify(this.t('error.databaseOpen'), 'error')
       } finally {
         this.loading = false
+        this.scheduleChartRender()
       }
       window.addEventListener('online', () => {
         this.online = true
-        void this.refreshProviders(false)
+        resyncNow()
+        void this.refreshProviders(false, true)
         void this.runJobs()
       })
       window.addEventListener('offline', () => { this.online = false })
+      const refreshVisibleClient = () => {
+        if (document.visibilityState !== 'visible') return
+        this.online = navigator.onLine
+        if (!this.online) return
+        resyncNow()
+        void this.refreshProviders(false, true)
+      }
+      document.addEventListener('visibilitychange', refreshVisibleClient)
+      window.addEventListener('pageshow', refreshVisibleClient)
+      window.addEventListener('resize', () => this.scheduleChartRender())
       window.addEventListener('bianco-update', () => { this.updateAvailable = true })
       window.addEventListener('bianco-offline-ready', () => this.notify(this.t('notification.offlineReady')))
       window.addEventListener('languagechange', () => {
@@ -217,20 +310,15 @@ export function biancoApp() {
     async setSettings(settings) {
       const themePreference = normalizedThemePreference(settings.themePreference)
       const languagePreference = normalizedLanguagePreference(settings.languagePreference)
-      this.settings = { ...settings, themePreference, languagePreference }
+      const aiSummary = settings.aiSummary?.promptVersion === SUMMARY_PROMPT_VERSION
+        ? settings.aiSummary
+        : null
+      this.settings = { ...settings, aiSummary, themePreference, languagePreference }
       this.themePreference = themePreference
       this.languagePreference = languagePreference
       this.applyThemePreference(themePreference)
       await this.applyLanguagePreference(languagePreference, false)
-      if (!this.settingsOpen) this.resetSettingsForm()
       this.recompute()
-    },
-
-    resetSettingsForm() {
-      this.settingsForm = {
-        insightMinimumPercent: this.settings.insightMinimumPercent,
-        insightMinimumEuro: this.settings.insightMinimumMinor / 100
-      }
     },
 
     applyThemePreference(preference) {
@@ -240,6 +328,7 @@ export function biancoApp() {
       else document.documentElement.dataset.theme = normalized
       try { window.localStorage.setItem(THEME_STORAGE_KEY, normalized) } catch { /* Storage may be disabled. */ }
       this.updateThemeColor()
+      this.scheduleChartRender()
     },
 
     updateThemeColor() {
@@ -259,9 +348,7 @@ export function biancoApp() {
       this.settings.locale = locale
       if (previousLanguage !== language) {
         this.languageRevision += 1
-        this.chart?.destroy()
-        this.chart = null
-        this.$nextTick?.(() => this.renderChart())
+        this.scheduleChartRender()
         void this.updateStorageUsage()
       }
       if (persistLocale && database) {
@@ -302,10 +389,10 @@ export function biancoApp() {
       const dialog = this.$refs.settingsDialog
       if (!dialog || dialog.open) return
       this.settingsTrigger = event?.currentTarget || document.activeElement
-      this.resetSettingsForm()
       this.settingsOpen = true
       document.documentElement.classList.add('modal-is-open')
       dialog.showModal()
+      void this.refreshProviders(false, true)
       this.$nextTick?.(() => this.$refs.settingsTitle?.focus())
     },
 
@@ -319,6 +406,7 @@ export function biancoApp() {
       this.settingsOpen = false
       document.documentElement.classList.remove('modal-is-open')
       this.providerRequestId += 1
+      this.stopOpenAiLoginPolling()
       this.providerBusy = false
       this.providerForm.apiKey = ''
       this.providerForm.clearApiKey = false
@@ -329,42 +417,166 @@ export function biancoApp() {
 
     recompute() {
       this.insights = computeInsights(this.receipts, this.items, {
-        minimumMinor: this.settings.insightMinimumMinor,
-        minimumPercent: this.settings.insightMinimumPercent
+        minimumMinor: INSIGHT_MINIMUM_MINOR,
+        minimumPercent: INSIGHT_MINIMUM_PERCENT
       })
-      this.$nextTick?.(() => this.renderChart())
+      this.aiSummaryCurrent = false
+      void this.validateAiSummary()
+      this.scheduleChartRender()
     },
 
-    async renderChart() {
-      const revision = ++this.chartRenderRevision
-      const canvas = this.$refs?.categoryChart
-      if (!canvas || this.view !== 'dashboard') return
-      const entries = this.insights.categories.filter((entry) => entry.total > 0)
-      if (!entries.length) {
-        this.chart?.destroy()
-        this.chart = null
+    summarySnapshot() {
+      return {
+        ...insightSnapshot(this.insights),
+        locale: this.settings.locale,
+        currency: this.settings.defaultCurrency
+      }
+    },
+
+    async validateAiSummary() {
+      const summary = this.settings.aiSummary
+      if (!summary || !this.receiptsReady || !this.itemsReady) return
+      const revision = ++this.summaryValidationRevision
+      const expectedHash = await summaryDatasetHash(
+        this.summarySnapshot(),
+        this.resolvedLanguage,
+        SUMMARY_PROMPT_VERSION
+      )
+      if (revision !== this.summaryValidationRevision || this.settings.aiSummary !== summary) return
+      if (isSummaryCurrent(summary, expectedHash, SUMMARY_PROMPT_VERSION)) {
+        this.aiSummaryCurrent = true
         return
       }
-      const Chart = await getChartConstructor()
-      if (revision !== this.chartRenderRevision || this.view !== 'dashboard' || canvas !== this.$refs?.categoryChart) return
-      this.chart?.destroy()
-      this.chart = new Chart(canvas, {
-        type: 'doughnut',
-        data: {
-          labels: entries.map((entry) => this.categoryLabel(entry.id)),
-          datasets: [{
-            data: entries.map((entry) => entry.total / 100),
-            backgroundColor: entries.map((entry) => categoryMap[entry.id]?.color || '#64748b'),
-            borderWidth: 0,
-            spacing: 2
-          }]
-        },
-        options: {
-          maintainAspectRatio: false,
-          cutout: '70%',
-          plugins: { legend: { display: false }, tooltip: { callbacks: { label: (context) => this.money(context.raw * 100) } } }
-        }
+      this.settings = { ...this.settings, aiSummary: null }
+      const document = await database?.settings.findOne('singleton').exec()
+      if (document?.aiSummary?.datasetHash === summary.datasetHash) {
+        await document.incrementalPatch({ aiSummary: null })
+      }
+    },
+
+    showDashboard() {
+      this.view = 'dashboard'
+      this.scheduleChartRender()
+    },
+
+    setSpendingGranularity(granularity) {
+      if (!['week', 'month'].includes(granularity) || granularity === this.spendingGranularity) return
+      this.spendingGranularity = granularity
+      this.scheduleChartRender()
+    },
+
+    scheduleChartRender() {
+      if (this.loading || this.view !== 'dashboard') return
+      const revision = ++this.chartRenderRevision
+      this.$nextTick?.(() => {
+        window.requestAnimationFrame(() => window.requestAnimationFrame(() => {
+          if (revision === this.chartRenderRevision) void this.renderCharts(revision)
+        }))
       })
+    },
+
+    prepareChartCanvas(canvas, container) {
+      if (!canvas || !container) return false
+      const bounds = container.getBoundingClientRect()
+      if (bounds.width < 1 || bounds.height < 1) return false
+      canvas.style.width = `${bounds.width}px`
+      canvas.style.height = `${bounds.height}px`
+      canvas.width = Math.max(1, Math.round(bounds.width))
+      canvas.height = Math.max(1, Math.round(bounds.height))
+      return true
+    },
+
+    chartColors() {
+      const styles = window.getComputedStyle(document.documentElement)
+      return {
+        accent: styles.getPropertyValue('--accent').trim() || '#0f766e',
+        line: styles.getPropertyValue('--line').trim() || '#dce6e3',
+        muted: styles.getPropertyValue('--muted').trim() || '#63746f'
+      }
+    },
+
+    spendingPeriodLabel(entry) {
+      const date = new Date(`${entry.start}T12:00:00`)
+      const options = this.spendingGranularity === 'month'
+        ? { month: 'short', year: '2-digit' }
+        : { day: 'numeric', month: 'short' }
+      return new Intl.DateTimeFormat(this.settings.locale || 'en-GB', options).format(date)
+    },
+
+    async renderCharts(revision = this.chartRenderRevision) {
+      if (this.loading || this.view !== 'dashboard') return
+      const Chart = await getChartConstructor()
+      if (revision !== this.chartRenderRevision || this.view !== 'dashboard') return
+      const colors = this.chartColors()
+      const commonOptions = {
+        responsive: false,
+        animation: false,
+        devicePixelRatio: Math.min(window.devicePixelRatio || 1, 2),
+        plugins: { legend: { display: false } }
+      }
+
+      const categoryEntries = this.insights.categories.filter((entry) => entry.total > 0)
+      this.categoryChart?.destroy()
+      this.categoryChart = null
+      if (categoryEntries.length && this.prepareChartCanvas(this.$refs.categoryChart, this.$refs.categoryChartContainer)) {
+        this.categoryChart = new Chart(this.$refs.categoryChart, {
+          type: 'doughnut',
+          data: {
+            labels: categoryEntries.map((entry) => this.categoryLabel(entry.id)),
+            datasets: [{
+              data: categoryEntries.map((entry) => entry.total / 100),
+              backgroundColor: categoryEntries.map((entry) => categoryMap[entry.id]?.color || '#64748b'),
+              borderWidth: 0,
+              spacing: 2
+            }]
+          },
+          options: {
+            ...commonOptions,
+            cutout: '70%',
+            plugins: {
+              ...commonOptions.plugins,
+              tooltip: { callbacks: { label: (context) => this.money(Math.round(context.raw * 100)) } }
+            }
+          }
+        })
+      }
+
+      const series = this.spendingGranularity === 'week'
+        ? this.insights.spending.weekly
+        : this.insights.spending.monthly
+      this.spendingChart?.destroy()
+      this.spendingChart = null
+      if (series.some((entry) => entry.total > 0) && this.prepareChartCanvas(this.$refs.spendingChart, this.$refs.spendingChartContainer)) {
+        this.spendingChart = new Chart(this.$refs.spendingChart, {
+          type: 'bar',
+          data: {
+            labels: series.map((entry) => this.spendingPeriodLabel(entry)),
+            datasets: [{
+              data: series.map((entry) => entry.total / 100),
+              backgroundColor: colors.accent,
+              borderColor: colors.accent,
+              borderWidth: 0,
+              borderRadius: 6,
+              minBarLength: 2
+            }]
+          },
+          options: {
+            ...commonOptions,
+            scales: {
+              x: { grid: { display: false }, ticks: { color: colors.muted, maxRotation: 0, autoSkip: true } },
+              y: {
+                beginAtZero: true,
+                grid: { color: colors.line },
+                ticks: { color: colors.muted, callback: (value) => this.money(Number(value) * 100) }
+              }
+            },
+            plugins: {
+              ...commonOptions.plugins,
+              tooltip: { callbacks: { label: (context) => this.money(Math.round(context.raw * 100)) } }
+            }
+          }
+        })
+      }
     },
 
     get syncLabel() {
@@ -382,12 +594,16 @@ export function biancoApp() {
       return receiptIds.size
     },
 
+    get attentionCount() {
+      return this.receipts.filter((receipt) => ['needs_review', 'failed'].includes(receipt.status)).length
+    },
+
     get editingProvider() {
       return this.providers.find((provider) => provider.id === this.providerForm.id) || null
     },
 
     get activeProvider() {
-      return this.providers.find((provider) => provider.id === this.settings.selectedAiProvider) || null
+      return this.providers.find((provider) => provider.active && provider.configured) || null
     },
 
     get providerConnectionMessage() {
@@ -403,7 +619,11 @@ export function biancoApp() {
       ).map((item) => item.receiptId))
       const now = new Date()
       return this.receipts.filter((receipt) => {
-        if (this.filters.category && receipt.categoryId !== this.filters.category) return false
+        if (this.filters.category) {
+          const receiptItems = this.items.filter((item) => item.receiptId === receipt.id)
+          const matchesItem = receiptItems.some((item) => item.categoryId === this.filters.category)
+          if (!matchesItem && (receiptItems.length || receipt.categoryId !== this.filters.category)) return false
+        }
         if (query) {
           const merchant = `${receipt.merchantNormalized || ''} ${receipt.merchantRaw || ''}`.toLocaleLowerCase(this.resolvedLanguage)
           if (!merchant.includes(query) && !matchingReceiptIds.has(receipt.id)) return false
@@ -419,37 +639,198 @@ export function biancoApp() {
       })
     },
 
-    previewFile(event) {
+    async previewFile(event) {
       const [file] = event.target.files || []
       if (!file) return
       if (!file.type.startsWith('image/')) {
         this.notify(this.t('error.invalidImage'), 'error')
+        event.target.value = ''
+        return
+      }
+      if (file.size > MAX_CAPTURE_BYTES) {
+        this.notify(this.t('error.imageTooLarge'), 'error')
+        event.target.value = ''
         return
       }
       this.resetCapture()
-      this.capture.file = file
-      this.capture.previewUrl = URL.createObjectURL(file)
+      const requestId = this.captureRequestId
+      this.capture = {
+        file,
+        processed: null,
+        originalUrl: URL.createObjectURL(file),
+        width: 0,
+        height: 0,
+        quad: null,
+        detected: false,
+        confidence: 0,
+        draggingCorner: null,
+        processing: true,
+        saving: false
+      }
       event.target.value = ''
+      try {
+        const detection = await detectReceiptDocument(file)
+        if (requestId !== this.captureRequestId) return
+        this.capture.width = detection.width
+        this.capture.height = detection.height
+        this.capture.quad = detection.quad
+        this.capture.detected = detection.detected
+        this.capture.confidence = detection.confidence
+      } catch {
+        if (requestId !== this.captureRequestId) return
+        this.resetCapture()
+        this.notify(this.t('error.jpegEncodingFailed'), 'error')
+      } finally {
+        if (requestId === this.captureRequestId) this.capture.processing = false
+      }
     },
 
     resetCapture() {
-      if (this.capture.previewUrl) URL.revokeObjectURL(this.capture.previewUrl)
-      this.capture = { file: null, previewUrl: null, processing: false }
+      this.captureAbortController?.abort()
+      this.captureAbortController = null
+      this.captureRequestId += 1
+      this.hideCropMagnifier()
+      if (this.capture.originalUrl) URL.revokeObjectURL(this.capture.originalUrl)
+      this.capture = {
+        file: null,
+        processed: null,
+        originalUrl: null,
+        width: 0,
+        height: 0,
+        quad: null,
+        detected: false,
+        confidence: 0,
+        draggingCorner: null,
+        processing: false,
+        saving: false
+      }
     },
 
-    async saveCapture() {
-      if (!this.capture.file || this.capture.processing) return
+    cropPolygonPoints() {
+      return (this.capture.quad || []).map((point) => `${point.x},${point.y}`).join(' ')
+    },
+
+    cropHandleRadius() {
+      const touchRatio = globalThis.matchMedia?.('(max-width: 760px)').matches ? 0.05 : 0.026
+      return Math.max(this.capture.width, this.capture.height) * touchRatio
+    },
+
+    cropQuadValid() {
+      return Boolean(sanitizeDocumentQuad(
+        this.capture.quad,
+        this.capture.width,
+        this.capture.height
+      ))
+    },
+
+    updateCropCorner(event) {
+      const index = this.capture.draggingCorner
+      const svg = this.$refs.cropEditor
+      if (index == null || !svg) return
+      event.preventDefault()
+      const matrix = svg.getScreenCTM()
+      if (!matrix) return
+      const point = svg.createSVGPoint()
+      point.x = event.clientX
+      point.y = event.clientY
+      const mapped = point.matrixTransform(matrix.inverse())
+      const quad = this.capture.quad.map((corner) => ({ ...corner }))
+      quad[index] = {
+        x: Math.max(0, Math.min(this.capture.width, mapped.x)),
+        y: Math.max(0, Math.min(this.capture.height, mapped.y))
+      }
+      this.capture.quad = quad
+      this.updateCropMagnifier(event, mapped, matrix)
+    },
+
+    startCropCorner(index, event) {
+      event.preventDefault()
+      this.capture.draggingCorner = index
+      this.cropLens.pointerId = pointerIdentity(event)
+      event.currentTarget.setPointerCapture?.(event.pointerId)
+      this.updateCropCorner(event)
+    },
+
+    stopCropCorner(event) {
+      if (event && this.cropLens.pointerId !== null && pointerIdentity(event) !== this.cropLens.pointerId) return
+      this.capture.draggingCorner = null
+      this.hideCropMagnifier()
+    },
+
+    hideCropMagnifier() {
+      this.cropLens.active = false
+      this.cropLens.pointerId = null
+    },
+
+    updateCropMagnifier(event, mapped, matrix) {
+      const viewport = globalThis.visualViewport
+      const viewportWidth = viewport?.width || globalThis.innerWidth || document.documentElement.clientWidth
+      const viewportHeight = viewport?.height || globalThis.innerHeight || document.documentElement.clientHeight
+      const preferredSize = Math.max(132, Math.min(176, viewportWidth * 0.38))
+      const size = fitCropMagnifierSize(viewportWidth, viewportHeight, preferredSize)
+      const position = placeCropMagnifier(
+        event.clientX,
+        event.clientY,
+        size,
+        viewportWidth,
+        viewportHeight
+      )
+      const zoom = 3
+      const scaleX = Math.hypot(matrix.a, matrix.b)
+      const scaleY = Math.hypot(matrix.c, matrix.d)
+      this.cropLens = {
+        ...this.cropLens,
+        active: true,
+        left: position.left,
+        top: position.top,
+        size,
+        backgroundPosition: `${size / 2 - mapped.x * scaleX * zoom}px ${size / 2 - mapped.y * scaleY * zoom}px`,
+        backgroundSize: `${this.capture.width * scaleX * zoom}px ${this.capture.height * scaleY * zoom}px`
+      }
+    },
+
+    cropMagnifierStyle() {
+      return {
+        left: `${this.cropLens.left}px`,
+        top: `${this.cropLens.top}px`,
+        width: `${this.cropLens.size}px`,
+        height: `${this.cropLens.size}px`,
+        backgroundImage: this.capture.originalUrl ? `url("${this.capture.originalUrl}")` : 'none',
+        backgroundPosition: this.cropLens.backgroundPosition,
+        backgroundSize: this.cropLens.backgroundSize
+      }
+    },
+
+    async confirmCapture() {
+      if (!this.capture.file || !this.cropQuadValid() || this.capture.processing || this.capture.saving) return
+      const requestId = this.captureRequestId
+      const controller = new AbortController()
+      this.captureAbortController = controller
+      this.capture.saving = true
       this.capture.processing = true
       try {
-        const processed = await processReceiptImage(this.capture.file)
-        await createCapturedReceipt(database, processed, this.settings.defaultCurrency)
+        const processed = await processReceiptImage(this.capture.file, {
+          sourceQuad: this.capture.quad,
+          signal: controller.signal
+        })
+        if (requestId !== this.captureRequestId) return
+        this.capture.processed = processed
+        await createCapturedReceipt(
+          database,
+          processed,
+          this.settings.defaultCurrency
+        )
         this.resetCapture()
         this.notify(this.t('notification.receiptSaved'))
         this.view = 'archive'
         void this.runJobs()
-      } catch {
-        this.capture.processing = false
+      } catch (error) {
+        if (error?.name === 'AbortError') return
+        this.capture.saving = false
         this.notify(this.t('error.saveFailed'), 'error')
+      } finally {
+        if (this.captureAbortController === controller) this.captureAbortController = null
+        if (requestId === this.captureRequestId) this.capture.processing = false
       }
     },
 
@@ -462,7 +843,9 @@ export function biancoApp() {
     async openReceipt(receiptId) {
       const result = await getReceiptDetail(database, receiptId)
       if (!result) return
+      this.detailRefreshPending = false
       if (this.detail.imageUrl) URL.revokeObjectURL(this.detail.imageUrl)
+      if (this.detail.fullImageUrl) URL.revokeObjectURL(this.detail.fullImageUrl)
       const receipt = result.receipt
       this.detail = {
         open: true,
@@ -480,9 +863,21 @@ export function biancoApp() {
           totalPriceEuro: toEuro(item.totalPriceMinor)
         })),
         imageUrl: await getImageUrl(database, receipt.imageHash, 'thumbnail'),
-        fullLoaded: false,
+        fullImageUrl: null,
+        fullLoading: false,
+        lens: {
+          active: false,
+          pointerId: null,
+          left: 0,
+          top: 0,
+          backgroundPosition: 'center',
+          backgroundSize: 'auto'
+        },
+        baseRevision: null,
+        baseAggregateSnapshot: receiptAggregateEditableSnapshot(receipt, result.items),
         dirty: false
       }
+      if (this.online) void this.loadReceiptAggregateRevision(receiptId)
       if (!this.detail.imageUrl && receipt.imageHash && this.online) {
         try {
           const blob = await downloadRemoteImage(database, receipt, 'thumbnail')
@@ -491,51 +886,237 @@ export function biancoApp() {
           // Remote image availability is optional while offline or before upload.
         }
       }
+      void this.ensureFullImage(receiptId)
+    },
+
+    async loadReceiptAggregateRevision(receiptId) {
+      try {
+        const aggregate = await getReceiptAggregate(receiptId)
+        if (this.detail.open && this.detail.id === receiptId && Number.isInteger(aggregate?.revision)) {
+          if (receiptAggregateMatches(this.detail.baseAggregateSnapshot, aggregate)) {
+            this.detail.baseRevision = aggregate.revision
+            return 'ready'
+          }
+          this.detail.baseRevision = null
+          resyncNow()
+          return 'conflict'
+        }
+      } catch {
+        // The local copy remains editable when the backend is unavailable or
+        // has not received this offline-first receipt yet.
+      }
+      return 'unavailable'
     },
 
     closeDetail() {
       if (this.detailRefreshTimer) window.clearTimeout(this.detailRefreshTimer)
       this.detailRefreshTimer = null
+      this.detailRefreshPending = false
+      this.imageViewerReturnFocus = null
+      if (this.$refs.imageViewerDialog?.open) this.$refs.imageViewerDialog.close()
+      this.imageViewerOpen = false
       if (this.detail.imageUrl) URL.revokeObjectURL(this.detail.imageUrl)
+      if (this.detail.fullImageUrl) URL.revokeObjectURL(this.detail.fullImageUrl)
       this.detail.open = false
       this.detail.imageUrl = null
+      this.detail.fullImageUrl = null
+      this.detail.fullLoading = false
+      this.detail.lens.active = false
     },
 
     scheduleDetailRefresh() {
-      if (!this.detail.open || this.detail.dirty) return
+      if (!this.detail.open) return
+      this.detailRefreshPending = true
+      if (
+        this.detail.dirty ||
+        this.detail.fullLoading ||
+        this.imageViewerOpen ||
+        this.detail.lens.pointerId !== null
+      ) return
       if (this.detailRefreshTimer) window.clearTimeout(this.detailRefreshTimer)
       const receiptId = this.detail.id
       this.detailRefreshTimer = window.setTimeout(() => {
         this.detailRefreshTimer = null
-        if (this.detail.open && this.detail.id === receiptId && !this.detail.dirty) {
+        if (
+          this.detail.open &&
+          this.detail.id === receiptId &&
+          !this.detail.dirty &&
+          !this.imageViewerOpen &&
+          this.detail.lens.pointerId === null
+        ) {
+          this.detailRefreshPending = false
           void this.openReceipt(receiptId)
         }
       }, 80)
     },
 
-    async loadFullImage() {
-      if (this.detail.fullLoaded) return
+    async ensureFullImage(receiptId = this.detail.id) {
+      if (this.detail.fullLoading) return
       const receipt = this.detail.form
-      let url = await getImageUrl(database, receipt.imageHash, 'full')
-      if (!url && receipt.imageHash && this.online) {
-        try {
+      let url = this.detail.fullImageUrl
+      this.detail.fullLoading = !url
+      try {
+        if (!url) url = await getImageUrl(database, receipt.imageHash, 'full')
+        if (!url && receipt.imageHash && this.online) {
           const blob = await downloadRemoteImage(database, receipt, 'full')
           url = URL.createObjectURL(blob)
-        } catch {
-          this.notify(this.t('error.imageUnavailable'), 'error')
         }
+      } catch {
+        url = null
+      } finally {
+        this.detail.fullLoading = false
       }
-      if (url) {
-        if (this.detail.imageUrl) URL.revokeObjectURL(this.detail.imageUrl)
-        this.detail.imageUrl = url
-        this.detail.fullLoaded = true
+      if (!this.detail.open || this.detail.id !== receiptId) {
+        if (url && url !== this.detail.fullImageUrl) URL.revokeObjectURL(url)
+        return null
       }
+      if (!url) {
+        return null
+      }
+      this.detail.fullImageUrl = url
+      return url
+    },
+
+    async loadFullImage(event) {
+      const trigger = event?.currentTarget || document.activeElement
+      const url = await this.ensureFullImage()
+      if (!url) {
+        this.notify(this.t('error.imageUnavailable'), 'error')
+        return
+      }
+      this.openImageViewer(trigger)
+    },
+
+    async activateMagnifier(event, capturePointer = false) {
+      event.preventDefault()
+      const surface = event.currentTarget
+      const receiptId = this.detail.id
+      const pointerId = pointerIdentity(event)
+      const url = await this.ensureFullImage(receiptId)
+      if (!url || !this.detail.open || this.detail.id !== receiptId) return
+      if (capturePointer && this.detail.lens.pointerId !== pointerId) return
+      if ((!event.pointerType || event.pointerType === 'mouse') && !surface.matches(':hover')) return
+      this.detail.lens.pointerId = pointerId
+      this.updateMagnifier(event, surface)
+    },
+
+    beginMagnifier(event) {
+      if (event.pointerType === 'mouse') return
+      event.preventDefault()
+      this.detail.lens.pointerId = pointerIdentity(event)
+      try { event.currentTarget.setPointerCapture?.(event.pointerId) } catch { /* Pointer may already be released. */ }
+      void this.activateMagnifier(event, true)
+    },
+
+    hoverMagnifier(event) {
+      if ((event.pointerType && event.pointerType !== 'mouse') || !window.matchMedia('(hover: hover) and (pointer: fine)').matches) return
+      void this.activateMagnifier(event)
+    },
+
+    moveMagnifier(event) {
+      if (event.pointerType && event.pointerType !== 'mouse') event.preventDefault()
+      const mouseInput = !event.pointerType || event.pointerType === 'mouse'
+      if (mouseInput && this.detail.lens.pointerId !== pointerIdentity(event)) {
+        this.hoverMagnifier(event)
+        return
+      }
+      this.updateMagnifier(event)
+    },
+
+    updateMagnifier(event, target = event.currentTarget) {
+      if (this.detail.lens.pointerId !== pointerIdentity(event)) return
+      const surface = target
+      const image = surface.querySelector('img')
+      if (!image?.naturalWidth || !image?.naturalHeight) return
+      const bounds = surface.getBoundingClientRect()
+      const imageRatio = image.naturalWidth / image.naturalHeight
+      const boxRatio = bounds.width / bounds.height
+      let contentWidth = bounds.width
+      let contentHeight = bounds.height
+      let offsetX = 0
+      let offsetY = 0
+      if (imageRatio > boxRatio) {
+        contentHeight = contentWidth / imageRatio
+        offsetY = (bounds.height - contentHeight) / 2
+      } else {
+        contentWidth = contentHeight * imageRatio
+        offsetX = (bounds.width - contentWidth) / 2
+      }
+      const sampleX = Math.max(0, Math.min(contentWidth, event.clientX - bounds.left - offsetX))
+      const sampleY = Math.max(0, Math.min(contentHeight, event.clientY - bounds.top - offsetY))
+      const radius = Math.min(76, Math.max(58, bounds.width * 0.18))
+      const pointerX = event.clientX - bounds.left
+      const pointerY = event.clientY - bounds.top
+      const touchOffset = event.pointerType === 'touch' ? radius + 34 : 0
+      const left = Math.max(0, Math.min(bounds.width - radius * 2, pointerX - radius))
+      const top = Math.max(0, Math.min(bounds.height - radius * 2, pointerY - radius - touchOffset))
+      const zoom = 2.6
+      this.detail.lens = {
+        active: true,
+        pointerId: pointerIdentity(event),
+        left,
+        top,
+        size: radius * 2,
+        backgroundPosition: `${radius - sampleX * zoom}px ${radius - sampleY * zoom}px`,
+        backgroundSize: `${contentWidth * zoom}px ${contentHeight * zoom}px`
+      }
+    },
+
+    stopMagnifier(event) {
+      if (event && this.detail.lens.pointerId !== pointerIdentity(event)) return
+      this.detail.lens.active = false
+      this.detail.lens.pointerId = null
+      if (this.detailRefreshPending) this.scheduleDetailRefresh()
+    },
+
+    releaseMagnifier(event) {
+      if (event.pointerType !== 'mouse') this.stopMagnifier(event)
+    },
+
+    magnifierStyle() {
+      const lens = this.detail.lens
+      return {
+        left: '0',
+        top: '0',
+        transform: `translate3d(${lens.left || 0}px, ${lens.top || 0}px, 0)`,
+        width: `${lens.size || 140}px`,
+        height: `${lens.size || 140}px`,
+        backgroundImage: this.detail.fullImageUrl ? `url("${this.detail.fullImageUrl}")` : 'none',
+        backgroundPosition: lens.backgroundPosition,
+        backgroundSize: lens.backgroundSize
+      }
+    },
+
+    openImageViewer(trigger) {
+      const dialog = this.$refs.imageViewerDialog
+      if (!dialog || dialog.open || !this.detail.fullImageUrl) return
+      if (this.detailRefreshTimer) window.clearTimeout(this.detailRefreshTimer)
+      this.detailRefreshTimer = null
+      this.imageViewerReturnFocus = trigger || document.activeElement
+      this.imageViewerOpen = true
+      dialog.showModal()
+      this.$nextTick?.(() => this.$refs.imageViewerClose?.focus())
+    },
+
+    closeImageViewer() {
+      if (this.$refs.imageViewerDialog?.open) {
+        this.$refs.imageViewerDialog.close()
+      } else {
+        this.onImageViewerClosed()
+      }
+    },
+
+    onImageViewerClosed() {
+      const returnFocus = this.imageViewerReturnFocus
+      this.imageViewerReturnFocus = null
+      this.imageViewerOpen = false
+      this.$nextTick?.(() => returnFocus?.focus?.())
     },
 
     addItem() {
       this.detail.items.push({
         id: createId(), rawName: '', normalizedName: '', quantity: '', unitPriceEuro: '',
-        totalPriceEuro: '', categoryId: this.detail.form.categoryId || 'other', confidence: null,
+        totalPriceEuro: '', categoryId: 'other', confidence: null,
         userEdited: true
       })
       this.detail.dirty = true
@@ -550,25 +1131,49 @@ export function biancoApp() {
       this.busy = true
       try {
         const form = this.detail.form
-        await updateReceipt(database, this.detail.id, {
+        const items = this.detail.items
+          .map((item) => ({
+            ...item,
+            id: item.id || createId(),
+            quantity: item.quantity === '' ? null : Number(item.quantity),
+            unitPriceMinor: toMinor(item.unitPriceEuro),
+            totalPriceMinor: toMinor(item.totalPriceEuro)
+          }))
+          .filter((item) => String(item.normalizedName || item.rawName || '').trim())
+        const receiptChanges = {
           merchantRaw: form.merchantNormalized || null,
           merchantNormalized: form.merchantNormalized || null,
           transactionDate: form.transactionDate || null,
           totalMinor: toMinor(form.totalEuro),
           currency: (form.currency || 'EUR').toUpperCase(),
-          categoryId: form.categoryId || 'other'
-        }, true)
-        await replaceReceiptItems(database, this.detail.id, this.detail.items.map((item) => ({
-          ...item,
-          quantity: item.quantity === '' ? null : Number(item.quantity),
-          unitPriceMinor: toMinor(item.unitPriceEuro),
-          totalPriceMinor: toMinor(item.totalPriceEuro)
-        })), true)
+          // Retained only for old clients; item categories are authoritative.
+          categoryId: dominantItemCategory(items)
+        }
+        if (this.online && !Number.isInteger(this.detail.baseRevision)) {
+          const aggregateState = await this.loadReceiptAggregateRevision(this.detail.id)
+          if (aggregateState === 'conflict') {
+            this.notify(this.t('error.receiptConflict'), 'error')
+            return
+          }
+        }
+        if (this.online && Number.isInteger(this.detail.baseRevision)) {
+          const aggregate = await putReceiptAggregate(this.detail.id, buildReceiptAggregateUpdate({
+            baseRevision: this.detail.baseRevision,
+            updatedByDevice: getDeviceId(),
+            receipt: { ...form, ...receiptChanges },
+            items
+          }))
+          this.detail.baseRevision = aggregate.revision
+          await applyReceiptAggregate(database, aggregate)
+        } else {
+          await replaceReceiptItems(database, this.detail.id, items, true)
+          await updateReceipt(database, this.detail.id, receiptChanges, true)
+        }
         this.closeDetail()
         this.view = 'archive'
         this.notify(this.t('notification.changesSaved'))
-      } catch {
-        this.notify(this.t('error.saveFailed'), 'error')
+      } catch (error) {
+        this.notify(this.t(isReceiptAggregateConflict(error) ? 'error.receiptConflict' : 'error.saveFailed'), 'error')
       } finally {
         this.busy = false
       }
@@ -597,33 +1202,27 @@ export function biancoApp() {
       }
     },
 
-    async runJobs() {
-      if (!database) return
-      await runPendingJobs(database, this.settings)
-    },
-
-    async saveSettings() {
-      this.busy = true
+    async reanalyzeAi() {
+      const confirmed = await this.confirmAction({
+        title: this.t('confirm.reanalyzeReceiptTitle'),
+        message: this.t('confirm.reanalyzeReceipt'),
+        confirmLabel: this.t('receiptDetail.reanalyze'),
+        destructive: false
+      })
+      if (!confirmed) return
       try {
-        const document = await database.settings.findOne('singleton').exec()
-        const updated = await document.incrementalPatch({
-          insightMinimumPercent: Number(this.settingsForm.insightMinimumPercent) || 0,
-          insightMinimumMinor: Math.round((Number(this.settingsForm.insightMinimumEuro) || 0) * 100)
-        })
-        this.setSettings(updated.toJSON())
-        this.notify(this.t('notification.thresholdsUpdated'))
+        await apiFetch(`/api/ai/jobs/${encodeURIComponent(this.detail.id)}/reanalyze`, { method: 'POST' })
+        this.detail.dirty = false
+        resyncNow()
+        this.notify(this.t('notification.processingQueued'))
       } catch {
-        this.notify(this.t('error.invalidConfiguration'), 'error')
-      } finally {
-        this.busy = false
+        this.notify(this.t('error.backendUnavailable'), 'error')
       }
     },
 
-    async persistAiProviderSelection(providerId) {
-      const document = await database.settings.findOne('singleton').exec()
-      if (!document || document.selectedAiProvider === providerId) return
-      const updated = await document.incrementalPatch({ selectedAiProvider: providerId })
-      await this.setSettings(updated.toJSON())
+    async runJobs() {
+      if (!database) return
+      await runPendingJobs(database, this.settings)
     },
 
     async activateAiProvider(providerId) {
@@ -636,29 +1235,34 @@ export function biancoApp() {
         active: provider.id === providerId
       }))
       this.updateProvider(activated)
-      await this.persistAiProviderSelection(providerId)
     },
 
-    async refreshProviders(showErrors = true) {
+    async refreshProviders(showErrors = true, alignWithActive = false) {
       if (!this.online) return
+      const requestId = ++this.providersRefreshRequestId
       try {
         const response = await apiFetch('/api/ai/providers')
-        this.providers = (await response.json()).providers
+        const providers = (await response.json()).providers
+        if (requestId !== this.providersRefreshRequestId) return
+        this.providers = providers
         const activeProvider = this.providers.find((provider) => provider.active && provider.configured)
-        if (activeProvider) {
-          await this.persistAiProviderSelection(activeProvider.id)
-        } else {
+        if (!activeProvider) {
           const availableProviders = this.providers.filter((provider) => provider.configured && provider.available)
-          const preferred = availableProviders.find((provider) => provider.id === this.settings.selectedAiProvider)
-          if (preferred || availableProviders.length === 1) {
-            await this.activateAiProvider((preferred || availableProviders[0]).id)
+          if (availableProviders.length === 1) {
+            await this.activateAiProvider(availableProviders[0].id)
           }
         }
-        if (!this.providerForm.id || !this.providers.some((provider) => provider.id === this.providerForm.id)) {
-          const preferred = this.settings.selectedAiProvider || this.providers[0]?.id || ''
-          this.editProvider(preferred)
+        const activeSelectionChanged = alignWithActive && activeProvider && !this.providerBusy && (
+          this.providerForm.id !== activeProvider.id ||
+          (activeProvider.id === 'openai' && this.providerForm.model !== (activeProvider.selectedModel || ''))
+        )
+        if (activeSelectionChanged) {
+          this.editProvider(activeProvider.id)
+        } else if (!this.providerForm.id || !this.providers.some((provider) => provider.id === this.providerForm.id)) {
+          this.editProvider(activeProvider?.id || this.providers[0]?.id || '')
         }
       } catch {
+        if (requestId !== this.providersRefreshRequestId) return
         this.providers = []
         if (showErrors) this.notify(this.t('error.backendUnavailable'), 'error')
       }
@@ -666,23 +1270,36 @@ export function biancoApp() {
 
     editProvider(providerId) {
       this.providerRequestId += 1
+      this.openAiModelsRequestId += 1
       this.providerBusy = false
+      this.stopOpenAiLoginPolling()
+      this.openAiLogin = null
+      this.openAiModels = []
       const provider = this.providers.find((entry) => entry.id === providerId)
-      this.providerModels = []
       this.providerConnectionState = 'idle'
-      this.setProviderConnectionMessage(!provider?.baseUrl
-        ? 'provider.enterEndpoint'
-        : provider.requiresApiKey && !provider.hasApiKey
-          ? 'provider.enterApiKey'
-          : 'provider.checking')
+      this.setProviderConnectionMessage(provider?.id === 'openai'
+        ? provider.chatgptConnected
+          ? provider.selectedModel
+            ? 'provider.providerActive'
+            : 'provider.chooseModel'
+          : 'provider.connectChatgpt'
+        : !provider?.baseUrl
+          ? 'provider.enterEndpoint'
+          : provider.requiresApiKey && !provider.hasApiKey
+            ? 'provider.enterApiKey'
+            : 'provider.checking', provider?.id === 'openai' && provider.selectedModel
+              ? { provider: this.providerLabel(provider) }
+              : {})
       this.providerForm = {
         id: provider?.id || '',
         baseUrl: provider?.baseUrl || '',
-        model: provider?.model || '',
         apiKey: '',
-        clearApiKey: false
+        clearApiKey: false,
+        model: provider?.selectedModel || ''
       }
-      if (this.online && provider?.baseUrl && (!provider.requiresApiKey || provider.hasApiKey)) {
+      if (this.online && provider?.id === 'openai' && provider.chatgptConnected) {
+        void this.loadOpenAiModels()
+      } else if (this.online && provider?.baseUrl && (!provider.requiresApiKey || provider.hasApiKey)) {
         void this.validateProviderConnection()
       }
     },
@@ -695,7 +1312,6 @@ export function biancoApp() {
     providerPayload() {
       const payload = {
         baseUrl: this.providerForm.baseUrl.trim(),
-        model: this.providerForm.model.trim(),
         clearApiKey: Boolean(this.providerForm.clearApiKey)
       }
       if (this.providerForm.apiKey.trim()) payload.apiKey = this.providerForm.apiKey.trim()
@@ -714,9 +1330,9 @@ export function biancoApp() {
     async validateProviderConnection() {
       if (!this.online || !this.providerForm.id) return
       const providerId = this.providerForm.id
+      if (providerId === 'openai') return
       const requestId = ++this.providerRequestId
       const baseUrl = this.providerForm.baseUrl.trim()
-      this.providerModels = []
       if (!baseUrl) {
         this.providerConnectionState = 'idle'
         this.setProviderConnectionMessage('provider.enterEndpoint')
@@ -724,7 +1340,7 @@ export function biancoApp() {
       }
       this.providerBusy = true
       this.providerConnectionState = 'checking'
-      this.setProviderConnectionMessage('provider.checkingModels')
+      this.setProviderConnectionMessage('provider.checking')
       try {
         const saveResponse = await apiFetch(`/api/ai/providers/${encodeURIComponent(providerId)}`, {
           method: 'PUT',
@@ -741,25 +1357,17 @@ export function biancoApp() {
           this.setProviderConnectionMessage('provider.enterApiKey')
           return
         }
-        const response = await apiFetch(`/api/ai/providers/${encodeURIComponent(providerId)}/models`)
-        const models = (await response.json()).models
-        if (requestId !== this.providerRequestId || providerId !== this.providerForm.id) return
-        const selectedModel = models.includes(this.providerForm.model) ? this.providerForm.model : ''
-        this.providerModels = models
-        this.providerForm.model = ''
-        this.$nextTick?.(() => { this.providerForm.model = selectedModel })
-        this.providerConnectionState = models.length ? 'ready' : 'error'
-        if (selectedModel) {
-          this.setProviderConnectionMessage('provider.modelsActive', {
-            provider: this.providerLabel(savedProvider),
-            model: selectedModel,
-            count: models.length
-          })
-        } else if (models.length) {
-          this.setProviderConnectionMessage('provider.selectAvailable', { count: models.length })
-        } else {
-          this.setProviderConnectionMessage('provider.noModels')
+        if (!savedProvider.configured || !savedProvider.available) {
+          this.providerConnectionState = 'error'
+          this.setProviderConnectionMessage('provider.backendUnavailable')
+          return
         }
+        await this.activateAiProvider(providerId)
+        this.providerConnectionState = 'ready'
+        this.setProviderConnectionMessage('provider.providerActive', {
+          provider: this.providerLabel(savedProvider)
+        })
+        void this.runJobs()
       } catch {
         if (requestId !== this.providerRequestId || providerId !== this.providerForm.id) return
         this.providerConnectionState = 'error'
@@ -769,53 +1377,176 @@ export function biancoApp() {
       }
     },
 
-    async selectProviderModel(model) {
-      if (!this.online || !model || !this.providerForm.id) return
-      const providerId = this.providerForm.id
-      const requestId = ++this.providerRequestId
+    stopOpenAiLoginPolling() {
+      if (this.openAiLoginPollTimer) window.clearInterval(this.openAiLoginPollTimer)
+      this.openAiLoginPollTimer = null
+    },
+
+    async connectOpenAiSubscription() {
+      if (!this.online || this.providerBusy) return
       this.providerBusy = true
       this.providerConnectionState = 'checking'
-      this.setProviderConnectionMessage('provider.activating')
+      this.setProviderConnectionMessage('provider.startingChatgptLogin')
       try {
-        this.providerForm.model = model
-        const response = await apiFetch(`/api/ai/providers/${encodeURIComponent(providerId)}`, {
+        const response = await apiFetch('/api/ai/providers/openai/chatgpt/device', { method: 'POST' })
+        this.openAiLogin = { ...(await response.json()), status: 'pending' }
+        this.providerConnectionState = 'checking'
+        this.setProviderConnectionMessage('provider.waitingChatgptLogin')
+        this.stopOpenAiLoginPolling()
+        this.openAiLoginPollTimer = window.setInterval(() => void this.pollOpenAiLogin(), 2000)
+      } catch {
+        this.providerConnectionState = 'error'
+        this.setProviderConnectionMessage('provider.chatgptLoginFailed')
+      } finally {
+        this.providerBusy = false
+      }
+    },
+
+    openOpenAiVerification() {
+      try {
+        const url = new URL(this.openAiLogin?.verificationUrl || '')
+        if (url.protocol !== 'https:' || url.hostname !== 'auth.openai.com') throw new Error('Untrusted URL')
+        window.open(url.toString(), '_blank', 'noopener,noreferrer')
+      } catch {
+        this.notify(this.t('provider.chatgptLoginFailed'), 'error')
+      }
+    },
+
+    async copyOpenAiCode() {
+      try {
+        await navigator.clipboard.writeText(this.openAiLogin?.userCode || '')
+        this.notify(this.t('notification.codeCopied'))
+      } catch {
+        this.notify(this.t('error.requestFailed'), 'error')
+      }
+    },
+
+    async pollOpenAiLogin() {
+      const loginId = this.openAiLogin?.loginId
+      if (!loginId || !this.settingsOpen || this.providerForm.id !== 'openai') {
+        this.stopOpenAiLoginPolling()
+        return
+      }
+      try {
+        const response = await apiFetch(`/api/ai/providers/openai/chatgpt/status?loginId=${encodeURIComponent(loginId)}`)
+        const status = await response.json()
+        if (status.status === 'connected') {
+          this.stopOpenAiLoginPolling()
+          this.openAiLogin = null
+          await this.refreshProviders(false)
+          if (this.providerForm.id === 'openai') await this.loadOpenAiModels()
+          return
+        }
+        if (status.status === 'expired' || status.status === 'unknown') {
+          this.stopOpenAiLoginPolling()
+          this.openAiLogin = { ...this.openAiLogin, status: status.status }
+          this.providerConnectionState = 'error'
+          this.setProviderConnectionMessage(status.status === 'expired'
+            ? 'provider.chatgptLoginExpired'
+            : 'provider.chatgptLoginFailed')
+        }
+      } catch {
+        this.stopOpenAiLoginPolling()
+        this.providerConnectionState = 'error'
+        this.setProviderConnectionMessage('provider.chatgptLoginFailed')
+      }
+    },
+
+    async loadOpenAiModels() {
+      if (!this.online || this.providerForm.id !== 'openai') return
+      const requestId = ++this.openAiModelsRequestId
+      this.openAiModelsLoading = true
+      try {
+        const response = await apiFetch('/api/ai/providers/openai/models')
+        const payload = await response.json()
+        if (requestId !== this.openAiModelsRequestId || this.providerForm.id !== 'openai') return
+        this.openAiModels = Array.isArray(payload.models) ? payload.models : []
+        const selected = payload.selectedModel || ''
+        // Let Alpine render the asynchronous <option> list before selecting.
+        // Safari otherwise keeps the visible select on its empty placeholder.
+        this.providerForm.model = ''
+        await new Promise((resolve) => {
+          if (typeof this.$nextTick === 'function') this.$nextTick(resolve)
+          else globalThis.queueMicrotask(resolve)
+        })
+        if (requestId !== this.openAiModelsRequestId || this.providerForm.id !== 'openai') return
+        this.providerForm.model = this.openAiModels.some((model) => model.id === selected) ? selected : ''
+        this.providerConnectionState = this.providerForm.model ? 'ready' : 'idle'
+        this.setProviderConnectionMessage(this.providerForm.model
+          ? 'provider.providerActive'
+          : this.openAiModels.length
+            ? 'provider.chooseModel'
+            : 'provider.noModels', this.providerForm.model
+              ? { provider: this.providerLabel(this.editingProvider) }
+              : {})
+      } catch {
+        if (requestId !== this.openAiModelsRequestId) return
+        this.openAiModels = []
+        this.providerConnectionState = 'error'
+        this.setProviderConnectionMessage('provider.modelsUnavailable')
+      } finally {
+        if (requestId === this.openAiModelsRequestId) this.openAiModelsLoading = false
+      }
+    },
+
+    async selectOpenAiModel() {
+      const model = this.providerForm.model
+      if (!model || !this.openAiModels.some((entry) => entry.id === model)) return
+      this.providerBusy = true
+      this.providerConnectionState = 'checking'
+      this.setProviderConnectionMessage('provider.activatingModel')
+      try {
+        const response = await apiFetch('/api/ai/providers/openai/model', {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(this.providerPayload())
+          body: JSON.stringify({ model })
         })
-        const savedProvider = await response.json()
-        if (requestId !== this.providerRequestId || providerId !== this.providerForm.id) return
-        this.updateProvider(savedProvider)
-        if (!savedProvider.available) throw new Error('MODEL_UNAVAILABLE')
-        await this.activateAiProvider(providerId)
+        const provider = await response.json()
+        this.updateProvider(provider)
         this.providerConnectionState = 'ready'
-        this.setProviderConnectionMessage('provider.modelActive', {
-          provider: this.providerLabel(savedProvider),
-          model: savedProvider.model
-        })
+        this.setProviderConnectionMessage('provider.providerActive', { provider: this.providerLabel(provider) })
         void this.runJobs()
       } catch {
-        if (requestId !== this.providerRequestId || providerId !== this.providerForm.id) return
         this.providerConnectionState = 'error'
         this.setProviderConnectionMessage('provider.activationFailed')
       } finally {
-        if (requestId === this.providerRequestId) this.providerBusy = false
+        this.providerBusy = false
+      }
+    },
+
+    async disconnectOpenAiSubscription() {
+      if (this.providerBusy) return
+      this.providerBusy = true
+      try {
+        await apiFetch('/api/ai/providers/openai/chatgpt', { method: 'DELETE' })
+        this.stopOpenAiLoginPolling()
+        this.openAiLogin = null
+        this.openAiModels = []
+        this.providerForm.model = ''
+        await this.refreshProviders(false)
+        if (this.providerForm.id === 'openai') this.editProvider('openai')
+        this.notify(this.t('notification.chatgptDisconnected'))
+      } catch {
+        this.notify(this.t('provider.chatgptLogoutFailed'), 'error')
+      } finally {
+        this.providerBusy = false
       }
     },
 
     async generateAiSummary() {
       this.busy = true
       try {
-        const snapshot = { ...insightSnapshot(this.insights), locale: this.settings.locale }
-        const query = this.settings.selectedAiProvider ? `?provider_id=${encodeURIComponent(this.settings.selectedAiProvider)}` : ''
-        const response = await apiFetch(`/api/ai/insights${query}`, {
+        const snapshot = this.summarySnapshot()
+        const hash = await summaryDatasetHash(snapshot, this.resolvedLanguage, SUMMARY_PROMPT_VERSION)
+        const response = await apiFetch('/api/ai/insights', {
           method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(snapshot)
         })
         const generated = generatedInsightsSchema.parse(await response.json())
         const document = await database.settings.findOne('singleton').exec()
         await document.incrementalPatch({ aiSummary: {
           ...generated,
-          datasetHash: await datasetHash({ snapshot, language: this.resolvedLanguage }),
+          promptVersion: SUMMARY_PROMPT_VERSION,
+          datasetHash: hash,
           generatedAt: new Date().toISOString()
         } })
         this.notify(this.t('notification.summarySaved'))
@@ -829,7 +1560,7 @@ export function biancoApp() {
     async exportBackup() {
       this.busy = true
       try {
-        await downloadBackup(database, this.includeImagesInBackup)
+        await downloadBackup(database, false)
         this.notify(this.t('notification.backupCreated'))
       } catch {
         this.notify(this.t('error.backupFailed'), 'error')
@@ -852,6 +1583,30 @@ export function biancoApp() {
       } catch { /* Storage may be disabled. */ }
       await deleteLocalDatabase()
       window.location.reload()
+    },
+
+    async logoutAndWipeLocalData() {
+      if (!this.online || this.busy) return
+      const confirmed = await this.confirmAction({
+        title: this.t('confirm.logoutAndDeleteTitle'),
+        message: this.t('confirm.logoutAndDelete'),
+        confirmLabel: this.t('settings.account.signOutAndDelete'),
+        destructive: true
+      })
+      if (!confirmed) return
+      this.busy = true
+      try {
+        await deleteLocalDatabase()
+        try {
+          window.localStorage.removeItem(THEME_STORAGE_KEY)
+          window.localStorage.removeItem(LANGUAGE_STORAGE_KEY)
+        } catch { /* Storage may be disabled. */ }
+        await fetch('/auth/logout', { method: 'POST', credentials: 'same-origin' })
+        window.location.assign('/auth/login')
+      } catch {
+        this.notify(this.t('error.logoutFailed'), 'error')
+        this.busy = false
+      }
     },
 
     async updateStorageUsage() {
@@ -924,6 +1679,10 @@ export function biancoApp() {
     },
 
     applyUpdate() {
+      if (this.capture.processing || this.capture.saving || this.detail.dirty) {
+        this.notify(this.t('notification.updateDeferred'))
+        return
+      }
       window.biancoApplyUpdate?.()
     },
 
@@ -952,6 +1711,13 @@ export function biancoApp() {
         : this.t('date.unknown')
     },
     categoryLabel(id) { return this.t(`category.${categoryTranslationKeys[id] || 'other'}`) },
+    localizedAiText(value) {
+      if (typeof value !== 'string') return ''
+      return Object.keys(categoryTranslationKeys).reduce(
+        (text, id) => text.replace(new RegExp(`\\b${id}\\b`, 'gi'), this.categoryLabel(id)),
+        value
+      )
+    },
     categoryColor(id) { return categoryMap[id]?.color || '#64748b' },
     merchantLabel(id) { return id === UNKNOWN_MERCHANT_ID ? this.t('archive.unknownMerchant') : id },
     providerLabel(provider) {
@@ -959,6 +1725,10 @@ export function biancoApp() {
       const fallback = typeof provider === 'string' ? provider : provider?.label
       const key = providerTranslationKeys[id]
       return key ? this.t(`provider.name.${key}`) : (fallback || id || '')
+    },
+    modelDisplayName(model) {
+      const label = model?.displayName || model?.id || ''
+      return model?.isDefault ? `${label} · ${this.t('settings.ai.recommended')}` : label
     },
     statusLabel(status) { return this.t(`receiptStatus.${statusTranslationKeys[status] || status}`, { defaultValue: status }) },
     insightText(entry) {

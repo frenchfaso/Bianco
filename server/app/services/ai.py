@@ -1,5 +1,10 @@
 from app.config import Settings
-from app.providers import DisabledProvider, OllamaProvider, OpenAICompatibleProvider
+from app.providers import (
+    DisabledProvider,
+    OllamaProvider,
+    OpenAICompatibleProvider,
+    OpenAISubscriptionProvider,
+)
 from app.repositories.ai_providers import (
     ResolvedProviderConfiguration,
     resolve_all_provider_configurations,
@@ -7,11 +12,27 @@ from app.repositories.ai_providers import (
 )
 from sqlalchemy.orm import Session
 
+from app.services.openai_codex import get_openai_codex_service
 
-def build_provider(configuration: ResolvedProviderConfiguration):
+
+def build_provider(
+    configuration: ResolvedProviderConfiguration,
+    settings: Settings,
+):
     definition = configuration.definition
+    if definition.id == "openai":
+        return OpenAISubscriptionProvider(
+            configuration.model,
+            get_openai_codex_service(settings),
+            settings.openai_reasoning_effort,
+        )
     if definition.id == "ollama":
-        return OllamaProvider(configuration.base_url, configuration.model)
+        return OllamaProvider(
+            configuration.base_url,
+            configuration.model,
+            ocr_model=settings.ollama_ocr_model,
+            audit_model=settings.ollama_audit_model,
+        )
     return OpenAICompatibleProvider(
         configuration.base_url,
         configuration.api_key,
@@ -24,7 +45,7 @@ def build_provider(configuration: ResolvedProviderConfiguration):
 
 def configured_providers(settings: Settings, session: Session):
     providers = {
-        configuration.definition.id: build_provider(configuration)
+        configuration.definition.id: build_provider(configuration, settings)
         for configuration in resolve_all_provider_configurations(session, settings)
     }
     providers["none"] = DisabledProvider()

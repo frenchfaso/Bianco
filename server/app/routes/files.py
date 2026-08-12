@@ -1,3 +1,5 @@
+import asyncio
+from functools import partial
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
@@ -10,7 +12,13 @@ from app.repositories.ai_jobs import enqueue_extraction, job_entry
 from app.schemas.ai import SupportedLocale
 from app.security import require_token
 from app.services.ai_queue import wake_ai_worker
-from app.services.files import InvalidImage, file_path, store_image, validate_image
+from app.services.files import (
+    InvalidImage,
+    ensure_thumbnail,
+    file_path,
+    mime_type_for_path,
+    validate_and_store_image,
+)
 
 router = APIRouter(
     prefix="/api/files", tags=["files"], dependencies=[Depends(require_token)]
@@ -42,8 +50,17 @@ async def upload_file(
     if file.content_type != mime_type:
         raise HTTPException(status_code=422, detail="MIME type fields do not match")
     try:
-        file_id = validate_image(payload, sha256.lower(), mime_type)
-        existed = store_image(settings.files_dir, file_id, payload)
+        file_id, existed = await asyncio.to_thread(
+            partial(
+                validate_and_store_image,
+                settings.files_dir,
+                payload,
+                sha256.lower(),
+                mime_type,
+                max_pixels=settings.max_image_pixels,
+                max_dimension=settings.max_image_dimension,
+            )
+        )
     except InvalidImage as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
     job = enqueue_extraction(
@@ -69,13 +86,22 @@ def download_file(
     variant: Literal["full", "thumbnail"] = "full",
 ) -> FileResponse:
     try:
-        path = file_path(settings.files_dir, file_id, thumbnail=variant == "thumbnail")
-    except InvalidImage as error:
+        path = (
+            ensure_thumbnail(
+                settings.files_dir,
+                file_id,
+                max_pixels=settings.max_image_pixels,
+                max_dimension=settings.max_image_dimension,
+            )
+            if variant == "thumbnail"
+            else file_path(settings.files_dir, file_id)
+        )
+    except (InvalidImage, FileNotFoundError) as error:
         raise HTTPException(status_code=404, detail="File not found") from error
     if not path.is_file():
         raise HTTPException(status_code=404, detail="File not found")
     return FileResponse(
         path,
-        media_type="image/jpeg",
+        media_type=mime_type_for_path(path),
         headers={"Cache-Control": "private, no-store"},
     )

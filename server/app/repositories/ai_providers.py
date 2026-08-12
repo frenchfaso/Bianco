@@ -30,7 +30,7 @@ class ResolvedProviderConfiguration:
 
 PROVIDER_DEFINITIONS = {
     "openai": ProviderDefinition(
-        "openai", "OpenAI", "https://api.openai.com/v1", True
+        "openai", "OpenAI · ChatGPT subscription", "", False
     ),
     "ollama": ProviderDefinition("ollama", "Ollama", "", False),
     "openai-compatible": ProviderDefinition(
@@ -48,7 +48,9 @@ def _fernet(settings: Settings) -> Fernet:
 
 def _environment_values(settings: Settings, provider_id: str) -> tuple[str, str, str]:
     if provider_id == "openai":
-        return settings.openai_base_url, settings.openai_model, settings.openai_api_key
+        # OpenAI is deliberately subscription-only. API keys belong to the
+        # separate OpenAI-compatible provider and are never used as a fallback.
+        return "", "", ""
     if provider_id == "ollama":
         return settings.ollama_base_url, settings.ollama_model, ""
     return (
@@ -70,7 +72,7 @@ def resolve_provider_configuration(
         return ResolvedProviderConfiguration(
             definition, base_url.rstrip("/"), model, api_key, "environment"
         )
-    if row.api_key_encrypted:
+    if row.api_key_encrypted and provider_id != "openai":
         try:
             api_key = _fernet(settings).decrypt(
                 row.api_key_encrypted.encode("ascii")
@@ -78,7 +80,14 @@ def resolve_provider_configuration(
         except (InvalidToken, UnicodeDecodeError) as error:
             raise ValueError(f"Cannot decrypt API key for {provider_id}") from error
     return ResolvedProviderConfiguration(
-        definition, row.base_url.rstrip("/"), row.model, api_key, "database"
+        definition,
+        "" if provider_id == "openai" else row.base_url.rstrip("/"),
+        # Only the ChatGPT subscription stores a user-selected model. Ollama and
+        # OpenAI-compatible models are backend-only, so their environment value
+        # must also override rows written by older clients.
+        row.model if provider_id == "openai" else model,
+        "" if provider_id == "openai" else api_key,
+        "database",
     )
 
 
@@ -92,6 +101,8 @@ def resolve_all_provider_configurations(
 
 
 def provider_is_configured(configuration: ResolvedProviderConfiguration) -> bool:
+    if configuration.definition.id == "openai":
+        return bool(configuration.model)
     return bool(
         configuration.base_url
         and configuration.model
@@ -158,12 +169,13 @@ def save_provider_configuration(
 ) -> ResolvedProviderConfiguration:
     if provider_id not in PROVIDER_DEFINITIONS:
         raise KeyError(provider_id)
+    if provider_id == "openai":
+        raise ValueError("OpenAI is configured through ChatGPT subscription login")
     row = session.get(AIProviderConfiguration, provider_id)
     if row is None:
-        row = AIProviderConfiguration(provider_id=provider_id)
+        row = AIProviderConfiguration(provider_id=provider_id, model="")
         session.add(row)
     row.base_url = update.base_url
-    row.model = update.model
     if update.clear_api_key:
         row.api_key_encrypted = None
     elif update.api_key is not None and update.api_key.strip():
@@ -173,3 +185,48 @@ def save_provider_configuration(
     row.updated_at = datetime.now(UTC).isoformat()
     session.commit()
     return resolve_provider_configuration(session, settings, provider_id)
+
+
+def save_provider_model(
+    session: Session,
+    settings: Settings,
+    provider_id: str,
+    model: str,
+) -> ResolvedProviderConfiguration:
+    """Persist a model already validated against the provider's live catalog."""
+    if provider_id not in PROVIDER_DEFINITIONS:
+        raise KeyError(provider_id)
+    normalized = model.strip()
+    if not normalized or len(normalized) > 255:
+        raise ValueError("Invalid AI model")
+    row = session.get(AIProviderConfiguration, provider_id)
+    if row is None:
+        row = AIProviderConfiguration(provider_id=provider_id, base_url="")
+        session.add(row)
+    row.model = normalized
+    if provider_id == "openai":
+        row.base_url = ""
+        row.api_key_encrypted = None
+    row.updated_at = datetime.now(UTC).isoformat()
+    session.commit()
+    return resolve_provider_configuration(session, settings, provider_id)
+
+
+def deactivate_provider_configuration(
+    session: Session, provider_id: str
+) -> None:
+    row = session.get(AISettings, AI_SETTINGS_ID)
+    if row and row.active_provider_id == provider_id:
+        _save_active_provider(session, None)
+
+
+def clear_openai_subscription_configuration(session: Session) -> None:
+    """Forget the selected subscription model so logout cannot reactivate it."""
+    row = session.get(AIProviderConfiguration, "openai")
+    if row is not None:
+        row.base_url = ""
+        row.model = ""
+        row.api_key_encrypted = None
+        row.updated_at = datetime.now(UTC).isoformat()
+        session.commit()
+    deactivate_provider_configuration(session, "openai")

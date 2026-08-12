@@ -1,7 +1,10 @@
 from html.parser import HTMLParser
 
 from fastapi.testclient import TestClient
+from pydantic import ValidationError
+import pytest
 
+from app.config import Settings
 from app.main import app
 
 
@@ -154,3 +157,21 @@ def test_rate_limit_is_enforced():
         limited = sign_in(value, password="wrong-password")
         assert limited.status_code == 429
         assert int(limited.headers["retry-after"]) > 0
+
+
+@pytest.mark.parametrize(
+    ("variable", "placeholder"),
+    [
+        ("BIANCO_SYNC_TOKEN", "replace-with-a-long-random-secret"),
+        (
+            "BIANCO_SECRET_KEY",
+            "replace-with-an-independent-secret-of-at-least-32-characters",
+        ),
+    ],
+)
+def test_settings_reject_documented_secret_placeholders(
+    monkeypatch, variable, placeholder
+):
+    monkeypatch.setenv(variable, placeholder)
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None)

@@ -14,6 +14,7 @@ export async function apiFetch(path, options = {}) {
     const problem = await response.json().catch(() => ({}))
     const error = new Error(problem.detail || `HTTP ${response.status}`)
     error.code = String(response.status)
+    error.problem = problem
     throw error
   }
   return response

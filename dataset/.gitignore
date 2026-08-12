@@ -1,0 +1,16 @@
+# Receipt photographs may contain loyalty, payment and transaction identifiers.
+*.jpeg
+*.jpg
+*.png
+
+# Ground-truth labels describe real purchases even when the source photographs are
+# absent. Keep the private corpus local; commit only synthetic/anonymised fixtures.
+labels.json
+
+# Generated benchmark output can be reproduced from the labels and local images.
+benchmark-*.json
+results/
+
+# The working benchmark report can include merchant names and observations from
+# the private corpus. Publish only deliberately anonymised summaries.
+BENCHMARK.md

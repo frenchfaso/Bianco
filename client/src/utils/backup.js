@@ -41,5 +41,7 @@ export async function downloadBackup(db, includeImages = false) {
   anchor.href = url
   anchor.download = `bianco-${backup.exportedAt.slice(0, 10)}.json`
   anchor.click()
-  URL.revokeObjectURL(url)
+  // Safari can cancel a download when the blob URL is revoked in the same
+  // task. Keep it alive briefly; it contains only this device's metadata.
+  window.setTimeout(() => URL.revokeObjectURL(url), 30_000)
 }

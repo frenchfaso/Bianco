@@ -4,9 +4,16 @@ const authStatePath = '/tmp/bianco-e2e-auth.json'
 
 export default async function globalSetup() {
   const baseURL = process.env.PLAYWRIGHT_BASE_URL || 'http://localhost'
+  const proxy = process.env.PLAYWRIGHT_PROXY
+    ? { server: process.env.PLAYWRIGHT_PROXY }
+    : undefined
   const username = process.env.BIANCO_TEST_AUTH_USER || 'test-user'
   const password = process.env.BIANCO_TEST_AUTH_PASSWORD || 'test-password'
-  const context = await request.newContext({ baseURL })
+  const context = await request.newContext({
+    baseURL,
+    ignoreHTTPSErrors: true,
+    proxy
+  })
   try {
     const page = await context.get('/auth/login')
     if (!page.ok()) throw new Error(`Login page returned HTTP ${page.status()}`)

@@ -3,10 +3,10 @@ import base64
 import httpx
 
 from app.providers.common import (
-    INSIGHT_PROMPT,
-    RECEIPT_PROMPT,
+    build_insight_prompt,
+    build_receipt_prompt,
     parse_json_content,
-    schema_for,
+    strict_schema_for,
 )
 from app.schemas.ai import (
     ExtractionContext,
@@ -76,7 +76,7 @@ class OpenAICompatibleProvider:
                 "json_schema": {
                     "name": output_model.__name__,
                     "strict": True,
-                    "schema": schema_for(output_model),
+                    "schema": strict_schema_for(output_model),
                 },
             },
         }
@@ -100,8 +100,8 @@ class OpenAICompatibleProvider:
                 "content": [
                     {
                         "type": "text",
-                        "text": RECEIPT_PROMPT.format(
-                            locale=context.locale, currency=context.currency
+                        "text": build_receipt_prompt(
+                            context.locale, context.currency
                         ),
                     },
                     {
@@ -119,10 +119,7 @@ class OpenAICompatibleProvider:
         messages = [
             {
                 "role": "user",
-                "content": (
-                    f"{INSIGHT_PROMPT.format(locale=snapshot.locale)}\n\n"
-                    f"Dati aggregati:\n{snapshot.model_dump_json()}"
-                ),
+                "content": build_insight_prompt(snapshot),
             }
         ]
         return await self._complete(messages, GeneratedInsights)

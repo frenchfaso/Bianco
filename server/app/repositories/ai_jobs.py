@@ -136,9 +136,19 @@ def schedule_retry(
     delay_seconds: int,
     increment_attempts: bool,
     max_attempts: int,
+    max_wait_seconds: int | None = None,
 ) -> bool:
     attempts = job.attempts + (1 if increment_attempts else 0)
-    terminal = increment_attempts and attempts >= max_attempts
+    waiting_too_long = False
+    if max_wait_seconds is not None:
+        try:
+            created_at = datetime.fromisoformat(job.created_at.replace("Z", "+00:00"))
+            waiting_too_long = (
+                datetime.now(UTC) - created_at
+            ).total_seconds() >= max_wait_seconds
+        except (TypeError, ValueError):
+            waiting_too_long = True
+    terminal = (increment_attempts and attempts >= max_attempts) or waiting_too_long
     job.status = "failed" if terminal else "pending"
     job.attempts = attempts
     job.next_attempt_at = None if terminal else (

@@ -42,9 +42,6 @@ async function createDatabase() {
       languagePreference: 'auto',
       themePreference: 'auto',
       defaultCurrency: 'EUR',
-      selectedAiProvider: null,
-      insightMinimumPercent: 20,
-      insightMinimumMinor: 1000,
       aiSummary: null
     })
   }

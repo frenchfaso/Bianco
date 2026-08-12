@@ -4,7 +4,7 @@ const nullableNumber = { type: ['number', 'null'], minimum: 0 }
 
 export const receiptSchema = {
   title: 'receipt',
-  version: 1,
+  version: 2,
   primaryKey: 'id',
   type: 'object',
   additionalProperties: false,
@@ -12,6 +12,7 @@ export const receiptSchema = {
     id: { type: 'string', maxLength: 64 },
     status: {
       type: 'string',
+      maxLength: 20,
       enum: ['captured', 'queued', 'processing', 'needs_review', 'confirmed', 'failed', 'manual']
     },
     capturedAt: { type: 'string' },
@@ -23,7 +24,7 @@ export const receiptSchema = {
     taxMinor: nullableInteger,
     discountMinor: nullableInteger,
     totalMinor: nullableInteger,
-    categoryId: { type: 'string' },
+    categoryId: { type: 'string', maxLength: 80 },
     imageHash: nullableString,
     overallConfidence: { type: ['number', 'null'], minimum: 0, maximum: 1 },
     warnings: { type: 'array', items: { type: 'string' } },
@@ -39,7 +40,7 @@ export const receiptSchema = {
       },
       required: ['providerId', 'modelId', 'promptVersion', 'schemaVersion']
     },
-    updatedAt: { type: 'string' },
+    updatedAt: { type: 'string', maxLength: 40 },
     updatedByDevice: { type: 'string' }
   },
   required: [
@@ -53,7 +54,7 @@ export const receiptSchema = {
 
 export const receiptItemSchema = {
   title: 'receipt item',
-  version: 1,
+  version: 2,
   primaryKey: 'id',
   type: 'object',
   additionalProperties: false,
@@ -65,11 +66,11 @@ export const receiptItemSchema = {
     quantity: nullableNumber,
     unitPriceMinor: nullableInteger,
     totalPriceMinor: nullableInteger,
-    categoryId: { type: 'string' },
+    categoryId: { type: 'string', maxLength: 80 },
     confidence: { type: ['number', 'null'], minimum: 0, maximum: 1 },
     position: { type: 'integer', minimum: 0 },
     userEdited: { type: 'boolean' },
-    updatedAt: { type: 'string' },
+    updatedAt: { type: 'string', maxLength: 40 },
     updatedByDevice: { type: 'string' }
   },
   required: [
@@ -82,7 +83,7 @@ export const receiptItemSchema = {
 
 export const imageSchema = {
   title: 'receipt image',
-  version: 1,
+  version: 2,
   primaryKey: 'id',
   type: 'object',
   additionalProperties: false,
@@ -94,7 +95,7 @@ export const imageSchema = {
     width: { type: 'integer', minimum: 0 },
     height: { type: 'integer', minimum: 0 },
     sizeBytes: { type: 'integer', minimum: 0 },
-    remoteStatus: { type: 'string', enum: ['pending', 'uploading', 'uploaded', 'failed', 'remote'] },
+    remoteStatus: { type: 'string', maxLength: 16, enum: ['pending', 'uploading', 'uploaded', 'failed', 'remote'] },
     remoteFileId: nullableString,
     createdAt: { type: 'string' }
   },
@@ -107,21 +108,21 @@ export const imageSchema = {
 
 export const jobSchema = {
   title: 'local job',
-  version: 2,
+  version: 3,
   primaryKey: 'id',
   type: 'object',
   additionalProperties: false,
   properties: {
     id: { type: 'string', maxLength: 64 },
-    type: { type: 'string', enum: ['image-upload', 'image-download', 'ai-insight'] },
-    receiptId: nullableString,
-    status: { type: 'string', enum: ['pending', 'processing', 'completed', 'failed'] },
+    type: { type: 'string', maxLength: 32, enum: ['image-upload', 'image-download', 'ai-insight'] },
+    receiptId: { type: ['string', 'null'], maxLength: 64 },
+    status: { type: 'string', maxLength: 16, enum: ['pending', 'processing', 'completed', 'failed'] },
     attempts: { type: 'integer', minimum: 0 },
     nextAttemptAt: nullableString,
     lastErrorCode: nullableString,
     lastErrorMessage: nullableString,
     createdAt: { type: 'string' },
-    updatedAt: { type: 'string' }
+    updatedAt: { type: 'string', maxLength: 40 }
   },
   required: [
     'id', 'type', 'receiptId', 'status', 'attempts', 'nextAttemptAt', 'lastErrorCode',
@@ -132,7 +133,7 @@ export const jobSchema = {
 
 export const settingSchema = {
   title: 'local settings',
-  version: 4,
+  version: 5,
   primaryKey: 'id',
   type: 'object',
   additionalProperties: false,
@@ -142,14 +143,10 @@ export const settingSchema = {
     languagePreference: { type: 'string', enum: ['auto', 'en', 'it', 'de', 'es', 'fr'] },
     themePreference: { type: 'string', enum: ['auto', 'light', 'dark'] },
     defaultCurrency: { type: 'string', minLength: 3, maxLength: 3 },
-    selectedAiProvider: nullableString,
-    insightMinimumPercent: { type: 'number', minimum: 0 },
-    insightMinimumMinor: { type: 'integer', minimum: 0 },
     aiSummary: { type: ['object', 'null'] }
   },
   required: [
-    'id', 'locale', 'languagePreference', 'themePreference', 'defaultCurrency', 'selectedAiProvider',
-    'insightMinimumPercent', 'insightMinimumMinor', 'aiSummary'
+    'id', 'locale', 'languagePreference', 'themePreference', 'defaultCurrency', 'aiSummary'
   ]
 }
 
@@ -187,16 +184,29 @@ const migrateSettingsV4 = (document) => ({
   languagePreference: 'auto',
   themePreference: 'auto'
 })
+const migrateSettingsV5 = (document) => {
+  const migrated = { ...document }
+  delete migrated.selectedAiProvider
+  delete migrated.insightMinimumPercent
+  delete migrated.insightMinimumMinor
+  return migrated
+}
 const migrateJobV2 = (document) => document.type === 'ai-extraction' ? null : document
 
 export const collections = {
-  receipts: { schema: receiptSchema, migrationStrategies: { 1: migrate } },
-  receipt_items: { schema: receiptItemSchema, migrationStrategies: { 1: migrate } },
-  images: { schema: imageSchema, migrationStrategies: { 1: migrate } },
-  jobs: { schema: jobSchema, migrationStrategies: { 1: migrate, 2: migrateJobV2 } },
+  receipts: { schema: receiptSchema, migrationStrategies: { 1: migrate, 2: migrate } },
+  receipt_items: { schema: receiptItemSchema, migrationStrategies: { 1: migrate, 2: migrate } },
+  images: { schema: imageSchema, migrationStrategies: { 1: migrate, 2: migrate } },
+  jobs: { schema: jobSchema, migrationStrategies: { 1: migrate, 2: migrateJobV2, 3: migrate } },
   settings: {
     schema: settingSchema,
-    migrationStrategies: { 1: migrate, 2: migrateSettingsV2, 3: migrateSettingsV3, 4: migrateSettingsV4 }
+    migrationStrategies: {
+      1: migrate,
+      2: migrateSettingsV2,
+      3: migrateSettingsV3,
+      4: migrateSettingsV4,
+      5: migrateSettingsV5
+    }
   },
   audit_events: { schema: auditEventSchema, migrationStrategies: { 1: migrate } }
 }

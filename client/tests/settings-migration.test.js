@@ -1,9 +1,9 @@
 import { describe, expect, it } from 'vitest'
 import { collections, jobSchema, settingSchema } from '../src/db/schemas.js'
 
-describe('settings schema v4', () => {
+describe('settings schema v5', () => {
   it('requires constrained language and theme preferences', () => {
-    expect(settingSchema.version).toBe(4)
+    expect(settingSchema.version).toBe(5)
     expect(settingSchema.properties.languagePreference).toEqual({
       type: 'string',
       enum: ['auto', 'en', 'it', 'de', 'es', 'fr']
@@ -19,9 +19,34 @@ describe('settings schema v4', () => {
     ]))
   })
 
-  it('registers every settings migration through version 4', () => {
+  it('registers every settings migration through version 5', () => {
     expect(collections.settings.schema).toBe(settingSchema)
-    expect(Object.keys(collections.settings.migrationStrategies)).toEqual(['1', '2', '3', '4'])
+    expect(Object.keys(collections.settings.migrationStrategies)).toEqual(['1', '2', '3', '4', '5'])
+  })
+
+  it('removes client shadows of server AI state and internal insight thresholds', async () => {
+    const previous = {
+      id: 'singleton',
+      locale: 'it-IT',
+      languagePreference: 'auto',
+      themePreference: 'auto',
+      defaultCurrency: 'EUR',
+      selectedAiProvider: 'openai',
+      insightMinimumPercent: 20,
+      insightMinimumMinor: 1000,
+      aiSummary: null
+    }
+
+    const migrated = await collections.settings.migrationStrategies[5](previous)
+
+    expect(migrated).toEqual({
+      id: 'singleton',
+      locale: 'it-IT',
+      languagePreference: 'auto',
+      themePreference: 'auto',
+      defaultCurrency: 'EUR',
+      aiSummary: null
+    })
   })
 
   it('migrates existing settings to automatic language and theme without mutation', async () => {
@@ -48,9 +73,9 @@ describe('settings schema v4', () => {
   })
 })
 
-describe('local upload job schema v2', () => {
+describe('local upload job schema v3', () => {
   it('removes legacy client-side AI extraction jobs during migration', async () => {
-    expect(jobSchema.version).toBe(2)
+    expect(jobSchema.version).toBe(3)
     expect(jobSchema.properties.type.enum).not.toContain('ai-extraction')
     expect(await collections.jobs.migrationStrategies[2]({
       id: 'legacy-ai-job',
@@ -61,5 +86,6 @@ describe('local upload job schema v2', () => {
   it('keeps pending image uploads for offline-first delivery', async () => {
     const upload = { id: 'upload-job', type: 'image-upload' }
     expect(await collections.jobs.migrationStrategies[2](upload)).toBe(upload)
+    expect(await collections.jobs.migrationStrategies[3](upload)).toBe(upload)
   })
 })

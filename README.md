@@ -9,8 +9,11 @@ server is available, and keeps your data under your control.
 ## Highlights
 
 - Offline-first capture and browsing
+- Conservative WebGPU-accelerated crop and perspective correction, with safe CPU fallback
+- WebP receipt storage when supported, with JPEG fallback
 - Automatic, transparent synchronization
-- AI extraction through OpenAI, Ollama, or any OpenAI-compatible endpoint
+- AI extraction through a ChatGPT/Codex subscription, Ollama, or any OpenAI-compatible endpoint
+- Optional audited Ollama pipeline with Qwen, GLM-OCR, and Gemma
 - Persistent server-side AI queue that keeps working after the app is closed
 - Fully editable receipts and line items
 - Light and dark themes, with English, Italian, German, Spanish, and French
@@ -29,6 +32,7 @@ cp .env.example .env
 ./scripts/hash-password.sh
 
 # Set distinct random values for BIANCO_SYNC_TOKEN and BIANCO_SECRET_KEY.
+chmod 600 .env
 docker compose up -d --build
 ```
 
@@ -43,14 +47,24 @@ HTTPS; set it to `false` only for an explicitly local plain-HTTP deployment.
 
 ## AI providers
 
-Configure AI from **Settings → Artificial intelligence**. Bianco validates the
-endpoint, discovers its models, and activates the selected model immediately.
-Provider API keys are encrypted on the server and are never stored in the
-browser.
+Configure providers from **Settings → Artificial intelligence**. OpenAI uses the
+ChatGPT device-login flow also used by OpenCode and Pi, then accesses the Codex models
+included with your ChatGPT plan directly over HTTPS. No Codex runtime is installed, and
+it never uses an OpenAI API key or API billing. OAuth credentials remain in the
+backend data volume, never in the PWA, while the available model list comes from
+the connected account. This is the same Codex login and transport family used by
+established open-source clients, implemented as a small compatibility adapter rather
+than through the Codex runtime. Because that transport is not an OpenAI API Platform
+contract, the adapter remains experimental: an upstream change can require a Bianco
+update. OpenAI-compatible provider keys are encrypted server-side.
 
 Ollama is an external service: Bianco connects to an existing instance but does
 not install Ollama or download models for you. The API container must be able to
-reach the configured endpoint.
+reach the configured endpoint. Set `OLLAMA_MODEL`, `OLLAMA_OCR_MODEL`, and
+`OLLAMA_AUDIT_MODEL` to enable the selected Qwen → GLM-OCR → Gemma receipt
+pipeline; leaving either secondary model blank keeps the direct single-model flow.
+The Codex login is intentionally not part of SQLite backups; reconnect ChatGPT
+after restoring Bianco onto a different server.
 
 ## Development
 
@@ -68,12 +82,25 @@ Run the production-stack smoke test with:
 ## Backups
 
 ```bash
-./scripts/backup.sh ./backups/bianco.sqlite
-./scripts/restore.sh ./backups/bianco.sqlite
+./scripts/backup.sh ./backups/bianco.tar.gz
+./scripts/restore.sh ./backups/bianco.tar.gz
 ```
 
-Keep backups and `BIANCO_SECRET_KEY` together securely: the same key is required
-to decrypt saved provider credentials after a restore.
+The versioned archive contains a consistent SQLite snapshot, receipt images, and
+checksums. Keep backups and `BIANCO_SECRET_KEY` together securely: the same key
+is required to decrypt saved provider credentials after a restore. ChatGPT device
+credentials are intentionally excluded and must be reconnected on a new server.
+`BIANCO_OPENAI_REASONING_EFFORT=medium` is the conservative default for GPT-5.6;
+change it only after comparing the labelled receipt eval, not from a single example.
+
+To inspect receipt image files that are no longer referenced, run the safe dry-run:
+
+```bash
+docker compose exec api python -m app.cli.gc_images --retention-days 30
+```
+
+Review the reported counts and bytes, then repeat with `--delete` to remove eligible
+files. Symlinks and malformed paths are never deleted.
 
 ## Security
 
@@ -90,6 +117,11 @@ use a strong login password, protect `.env`, keep dependencies updated, and neve
 expose the FastAPI service directly to the internet. Caddy delegates access
 checks to FastAPI with its native `forward_auth` directive; the API container
 remains private to the Compose network.
+
+Bianco keeps an offline copy in the browser. A normal sign-out closes the server
+session but deliberately leaves that copy available for offline use. On a shared or
+lost device, use **Sign out and remove data from this device**; browser-profile and
+device-level access controls remain part of the local security boundary.
 
 ## License
 

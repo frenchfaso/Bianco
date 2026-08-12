@@ -11,7 +11,8 @@ from starlette.middleware.sessions import SessionMiddleware
 
 from app.config import get_settings
 from app.routes import ai, auth, files, health, sync
-from app.services.ai_queue import run_ai_worker
+from app.services.ai_queue import configure_ai_worker_health, supervise_ai_worker
+from app.services.openai_codex import close_openai_codex_service
 
 logger = logging.getLogger("bianco")
 handler = logging.StreamHandler()
@@ -27,8 +28,11 @@ async def lifespan(_app: FastAPI):
     settings.data_dir.mkdir(parents=True, exist_ok=True)
     settings.files_dir.mkdir(parents=True, exist_ok=True)
     worker = None
+    configure_ai_worker_health(settings.ai_worker_enabled)
     if settings.ai_worker_enabled:
-        worker = asyncio.create_task(run_ai_worker(settings), name="bianco-ai-worker")
+        worker = asyncio.create_task(
+            supervise_ai_worker(settings), name="bianco-ai-worker-supervisor"
+        )
     try:
         yield
     finally:
@@ -36,6 +40,7 @@ async def lifespan(_app: FastAPI):
             worker.cancel()
             with suppress(asyncio.CancelledError):
                 await worker
+        await close_openai_codex_service()
 
 
 app = FastAPI(

@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 
 from app.config import Settings, get_settings
 from app.database import get_session
+from app.services.ai_queue import ai_worker_ready
 
 router = APIRouter(prefix="/api/health", tags=["health"])
 
@@ -31,7 +32,12 @@ def ready(
     session: Annotated[Session, Depends(get_session)],
     settings: Annotated[Settings, Depends(get_settings)],
 ):
-    checks: dict[str, bool] = {"database": False, "dataDirectory": False, "migrations": False}
+    checks: dict[str, bool] = {
+        "database": False,
+        "dataDirectory": False,
+        "migrations": False,
+        "aiWorker": ai_worker_ready(settings),
+    }
     try:
         session.execute(text("SELECT 1"))
         checks["database"] = True

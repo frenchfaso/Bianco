@@ -13,22 +13,64 @@ from sqlalchemy import select
 from app.database import SessionLocal
 from app.config import get_settings
 from app.models import AIExtractionJob, AIProviderConfiguration
+from app.providers.common import INSIGHT_PROMPT, insight_prompt_data
 from app.providers.openai_compatible import OpenAICompatibleProvider
 from app.providers.ollama import OllamaProvider
+from app.repositories.ai_providers import resolve_provider_configuration
 from app.schemas.ai import (
     ExtractionContext,
     InsightSnapshot,
     ProviderConfigurationUpdate,
     ReceiptExtraction,
 )
-from app.services.ai_queue import _backfill_legacy_extractions, process_next_ai_job
+from app.services.ai_queue import (
+    _backfill_legacy_extractions,
+    _failure_details,
+    process_next_ai_job,
+)
 from app.services.files import store_image
 
 
-def jpeg_bytes():
+def jpeg_bytes(size=(640, 480)):
     buffer = io.BytesIO()
-    Image.new("RGB", (640, 480), "white").save(buffer, format="JPEG")
+    Image.new("RGB", size, "white").save(buffer, format="JPEG")
     return buffer.getvalue()
+
+
+def webp_bytes():
+    buffer = io.BytesIO()
+    Image.new("RGB", (640, 480), "white").save(
+        buffer, format="WEBP", quality=90
+    )
+    return buffer.getvalue()
+
+
+def test_ai_failure_policy_blocks_auth_and_retries_transient_provider_errors():
+    request = httpx.Request("POST", "https://provider.invalid/v1/responses")
+    auth_error = httpx.HTTPStatusError(
+        "unauthorized", request=request, response=httpx.Response(401, request=request)
+    )
+    rate_error = httpx.HTTPStatusError(
+        "rate limited", request=request, response=httpx.Response(429, request=request)
+    )
+    bad_request = httpx.HTTPStatusError(
+        "bad request", request=request, response=httpx.Response(400, request=request)
+    )
+
+    assert _failure_details(auth_error) == (
+        "provider_authentication",
+        "AI provider needs to be reconnected",
+        300,
+        False,
+    )
+    assert _failure_details(PermissionError("ChatGPT authorization expired")) == (
+        "provider_authentication",
+        "AI provider needs to be reconnected",
+        300,
+        False,
+    )
+    assert _failure_details(rate_error)[3] is True
+    assert _failure_details(bad_request)[0] == "provider_request_rejected"
 
 
 def test_health_live_and_ready(client):
@@ -69,6 +111,73 @@ def test_file_upload_rejects_hash_and_mime_mismatch(client, auth_headers):
     )
     assert response.status_code == 422
 
+    mismatched_type = client.post(
+        "/api/files", headers=auth_headers,
+        data={
+            "sha256": hashlib.sha256(payload).hexdigest(),
+            "mimeType": "image/webp",
+            "receiptId": "r-mismatch",
+        },
+        files={"file": ("receipt.webp", payload, "image/webp")},
+    )
+    assert mismatched_type.status_code == 422
+
+
+def test_file_upload_rejects_excessive_pixel_dimensions(
+    client, auth_headers, monkeypatch
+):
+    settings = get_settings()
+    monkeypatch.setattr(settings, "max_image_pixels", 1_000_000)
+    payload = jpeg_bytes((1200, 1200))
+    response = client.post(
+        "/api/files",
+        headers=auth_headers,
+        data={
+            "sha256": hashlib.sha256(payload).hexdigest(),
+            "mimeType": "image/jpeg",
+            "receiptId": "r-too-many-pixels",
+        },
+        files={"file": ("receipt.jpg", payload, "image/jpeg")},
+    )
+    assert response.status_code == 422
+    assert "too many pixels" in response.json()["detail"]
+
+
+def test_file_upload_preserves_webp_full_image_and_thumbnail(client, auth_headers):
+    payload = webp_bytes()
+    digest = hashlib.sha256(payload).hexdigest()
+    response = client.post(
+        "/api/files", headers=auth_headers,
+        data={"sha256": digest, "mimeType": "image/webp", "receiptId": "r-webp"},
+        files={"file": ("receipt.webp", payload, "image/webp")},
+    )
+    assert response.status_code == 200
+    for variant in ("full", "thumbnail"):
+        downloaded = client.get(
+            f"/api/files/{digest}?variant={variant}", headers=auth_headers
+        )
+        assert downloaded.status_code == 200
+        assert downloaded.headers["content-type"] == "image/webp"
+        with Image.open(io.BytesIO(downloaded.content)) as image:
+            assert image.format == "WEBP"
+
+
+def test_large_thumbnail_keeps_a_readable_1280_pixel_edge(client, auth_headers):
+    payload = jpeg_bytes((900, 2400))
+    digest = hashlib.sha256(payload).hexdigest()
+    response = client.post(
+        "/api/files", headers=auth_headers,
+        data={"sha256": digest, "mimeType": "image/jpeg", "receiptId": "r-large"},
+        files={"file": ("receipt.jpg", payload, "image/jpeg")},
+    )
+    assert response.status_code == 200
+    thumbnail = client.get(
+        f"/api/files/{digest}?variant=thumbnail", headers=auth_headers
+    )
+    assert thumbnail.status_code == 200
+    with Image.open(io.BytesIO(thumbnail.content)) as image:
+        assert max(image.size) == 1280
+
 
 def test_ai_schema_rejects_untrusted_provider_values():
     with pytest.raises(ValidationError):
@@ -102,6 +211,45 @@ def test_ai_context_restricts_prompt_locale_and_normalizes_currency():
         )
 
 
+def test_insight_prompt_uses_unambiguous_major_currency_units():
+    snapshot = InsightSnapshot(
+        locale="it-IT",
+        currency="EUR",
+        period={"start": "2026-07-01", "end": "2026-07-21"},
+        total=12345,
+        previousTotal=10000,
+        categories=[{
+            "id": "food_grocery", "total": 10000,
+            "previousTotal": 8000, "difference": 2000,
+        }],
+        merchants=[{
+            "id": "Mercato esempio", "total": 3456,
+            "previousTotal": 3000, "difference": 456,
+        }],
+        items=[{"id": "Prodotto esempio", "total": 1350, "frequency": 1}],
+        priceChanges=[{
+            "id": "Articolo esempio", "latest": 250,
+            "previousAverage": 200, "difference": 50,
+        }],
+    )
+
+    payload = json.loads(insight_prompt_data(snapshot))
+
+    assert payload["currency"] == "EUR"
+    assert payload["amountUnit"] == "major"
+    assert payload["total"] == "123.45"
+    assert payload["categories"][0]["total"] == "100.00"
+    assert payload["categories"][0]["category"] == "Spesa alimentare"
+    assert "id" not in payload["categories"][0]
+    assert "food_grocery" not in insight_prompt_data(snapshot)
+    assert payload["merchants"][0]["total"] == "34.56"
+    assert payload["merchants"][0]["difference"] == "4.56"
+    assert payload["items"][0]["total"] == "13.50"
+    assert payload["priceChanges"][0]["latest"] == "2.50"
+    assert "Non moltiplicare o dividere per 100" in INSIGHT_PROMPT
+    assert "Le categorie sono gia' localizzate" in INSIGHT_PROMPT
+
+
 def test_ai_endpoint_is_independent_from_readiness(client, auth_headers):
     provider_response = client.get("/api/ai/providers", headers=auth_headers)
     assert provider_response.status_code == 200
@@ -121,11 +269,10 @@ def test_provider_configuration_is_encrypted_and_never_returned(
         OpenAICompatibleProvider, "health_check", AsyncMock(return_value=True)
     )
     response = client.put(
-        "/api/ai/providers/openai",
+        "/api/ai/providers/openai-compatible",
         headers=auth_headers,
         json={
             "baseUrl": "https://api.openai.com/v1",
-            "model": "gpt-test",
             "apiKey": "secret-provider-key",
         },
     )
@@ -133,11 +280,103 @@ def test_provider_configuration_is_encrypted_and_never_returned(
     assert response.json()["configured"] is True
     assert response.json()["available"] is True
     assert response.json()["hasApiKey"] is True
+    assert "model" not in response.json()
     assert "apiKey" not in response.json()
     with SessionLocal() as session:
-        row = session.get(AIProviderConfiguration, "openai")
+        row = session.get(AIProviderConfiguration, "openai-compatible")
         assert row is not None
         assert "secret-provider-key" not in row.api_key_encrypted
+
+
+def test_openai_rejects_api_configuration_and_uses_subscription_only(
+    client, auth_headers
+):
+    response = client.put(
+        "/api/ai/providers/openai",
+        headers=auth_headers,
+        json={
+            "baseUrl": "https://api.openai.com/v1",
+            "apiKey": "must-never-be-used",
+        },
+    )
+    assert response.status_code == 409
+    with SessionLocal() as session:
+        assert session.get(AIProviderConfiguration, "openai") is None
+
+
+def test_openai_device_login_lists_and_activates_entitled_models(
+    client, auth_headers, openai_codex_service
+):
+    started = client.post(
+        "/api/ai/providers/openai/chatgpt/device", headers=auth_headers
+    )
+    assert started.status_code == 200
+    assert started.json() == {
+        "loginId": "login-test",
+        "verificationUrl": "https://auth.openai.com/codex/device",
+        "userCode": "TEST-CODE",
+    }
+
+    openai_codex_service.connected = True
+    openai_codex_service.plan_type = "plus"
+    status = client.get(
+        "/api/ai/providers/openai/chatgpt/status?loginId=login-test",
+        headers=auth_headers,
+    )
+    assert status.json() == {
+        "connected": True,
+        "planType": "plus",
+        "status": "connected",
+    }
+    models = client.get("/api/ai/providers/openai/models", headers=auth_headers)
+    assert models.status_code == 200
+    assert models.json()["models"][0]["id"] == "gpt-codex-test"
+
+    selected = client.put(
+        "/api/ai/providers/openai/model",
+        headers=auth_headers,
+        json={"model": "gpt-codex-test"},
+    )
+    assert selected.status_code == 200
+    assert selected.json()["active"] is True
+    assert selected.json()["selectedModel"] == "gpt-codex-test"
+    assert selected.json()["chatgptConnected"] is True
+    assert selected.json()["planType"] == "plus"
+    assert "apiKey" not in selected.json()
+    with SessionLocal() as session:
+        row = session.get(AIProviderConfiguration, "openai")
+        assert row.model == "gpt-codex-test"
+        assert row.api_key_encrypted is None
+
+
+def test_openai_model_must_come_from_live_account_catalog(
+    client, auth_headers, openai_codex_service
+):
+    openai_codex_service.connected = True
+    response = client.put(
+        "/api/ai/providers/openai/model",
+        headers=auth_headers,
+        json={"model": "unentitled-model"},
+    )
+    assert response.status_code == 422
+
+
+def test_openai_logout_deactivates_provider(client, auth_headers, openai_codex_service):
+    openai_codex_service.connected = True
+    assert client.put(
+        "/api/ai/providers/openai/model",
+        headers=auth_headers,
+        json={"model": "gpt-codex-test"},
+    ).status_code == 200
+    disconnected = client.delete(
+        "/api/ai/providers/openai/chatgpt", headers=auth_headers
+    )
+    assert disconnected.status_code == 204
+    assert openai_codex_service.logged_out is True
+    providers = client.get("/api/ai/providers", headers=auth_headers).json()["providers"]
+    openai = next(entry for entry in providers if entry["id"] == "openai")
+    assert openai["active"] is False
+    assert openai["configured"] is False
 
 
 def test_provider_configuration_rejects_unsafe_base_url(client, auth_headers):
@@ -167,9 +406,127 @@ def test_provider_configuration_blocks_metadata_and_public_cleartext(base_url):
 
 def test_provider_configuration_allows_private_http_ollama_address():
     update = ProviderConfigurationUpdate.model_validate(
-        {"baseUrl": "http://192.168.1.100:11434", "model": "qwen3-vl:8b"}
+        {"baseUrl": "http://192.168.1.100:11434"}
     )
     assert update.base_url == "http://192.168.1.100:11434"
+
+
+def test_provider_configuration_test_is_non_mutating(
+    client, auth_headers, monkeypatch
+):
+    monkeypatch.setattr(OllamaProvider, "health_check", AsyncMock(return_value=True))
+
+    response = client.post(
+        "/api/ai/providers/ollama/test",
+        headers=auth_headers,
+        json={"baseUrl": "http://ollama.local:11434"},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"available": True}
+    with SessionLocal() as session:
+        assert session.get(AIProviderConfiguration, "ollama") is None
+
+
+def test_provider_configuration_is_validated_before_overwrite(
+    client, auth_headers, monkeypatch
+):
+    health_check = AsyncMock(side_effect=[True, False])
+    monkeypatch.setattr(OllamaProvider, "health_check", health_check)
+    original_url = "http://ollama.local:11434"
+
+    assert client.put(
+        "/api/ai/providers/ollama",
+        headers=auth_headers,
+        json={"baseUrl": original_url},
+    ).status_code == 200
+    rejected = client.put(
+        "/api/ai/providers/ollama",
+        headers=auth_headers,
+        json={"baseUrl": "http://192.168.1.101:11434"},
+    )
+
+    assert rejected.status_code == 409
+    with SessionLocal() as session:
+        row = session.get(AIProviderConfiguration, "ollama")
+        assert row is not None
+        assert row.base_url == original_url
+
+
+def test_incomplete_provider_draft_can_be_saved_without_network_check(
+    client, auth_headers, monkeypatch
+):
+    health_check = AsyncMock(return_value=True)
+    monkeypatch.setattr(OpenAICompatibleProvider, "health_check", health_check)
+    monkeypatch.setattr(get_settings(), "openai_compatible_model", "")
+
+    response = client.put(
+        "/api/ai/providers/openai-compatible",
+        headers=auth_headers,
+        json={"baseUrl": "https://provider.example.com/v1"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["configured"] is False
+    assert response.json()["available"] is False
+    health_check.assert_not_awaited()
+
+
+def test_provider_model_is_backend_only(client, auth_headers, monkeypatch):
+    monkeypatch.setattr(OllamaProvider, "health_check", AsyncMock(return_value=True))
+    response = client.put(
+        "/api/ai/providers/ollama",
+        headers=auth_headers,
+        json={
+            "baseUrl": "http://ollama.local:11434",
+            "model": "client-must-not-override-this",
+        },
+    )
+    assert response.status_code == 200
+    assert "model" not in response.json()
+    assert client.get(
+        "/api/ai/providers/ollama/models",
+        headers=auth_headers,
+    ).status_code == 404
+    with SessionLocal() as session:
+        row = session.get(AIProviderConfiguration, "ollama")
+        assert row is not None
+        assert row.model == ""
+
+
+@pytest.mark.parametrize(
+    ("provider_id", "settings_attribute", "environment_model", "base_url"),
+    [
+        ("ollama", "ollama_model", "server-ollama-model", "http://ollama.local:11434"),
+        (
+            "openai-compatible",
+            "openai_compatible_model",
+            "server-compatible-model",
+            "https://provider.example.com/v1",
+        ),
+    ],
+)
+def test_backend_model_overrides_model_persisted_by_legacy_clients(
+    monkeypatch, provider_id, settings_attribute, environment_model, base_url
+):
+    settings = get_settings()
+    monkeypatch.setattr(settings, settings_attribute, environment_model)
+    with SessionLocal() as session:
+        session.add(
+            AIProviderConfiguration(
+                provider_id=provider_id,
+                base_url=base_url,
+                model="legacy-client-model",
+                api_key_encrypted=None,
+                updated_at="2026-07-14T10:00:00Z",
+            )
+        )
+        session.commit()
+
+        configuration = resolve_provider_configuration(session, settings, provider_id)
+
+    assert configuration.model == environment_model
+    assert configuration.base_url == base_url
 
 
 def test_direct_ai_extraction_endpoint_is_not_exposed(client, auth_headers):
@@ -217,7 +574,7 @@ def configure_ollama(client, auth_headers, monkeypatch):
     response = client.put(
         "/api/ai/providers/ollama",
         headers=auth_headers,
-        json={"baseUrl": "http://ollama.local:11434", "model": "vision:latest"},
+        json={"baseUrl": "http://ollama.local:11434"},
     )
     assert response.status_code == 200
     active = client.put("/api/ai/providers/ollama/active", headers=auth_headers)
@@ -225,7 +582,13 @@ def configure_ollama(client, auth_headers, monkeypatch):
     assert active.json()["active"] is True
 
 
-def queue_receipt(client, auth_headers, payload: bytes, document: dict):
+def queue_receipt(
+    client,
+    auth_headers,
+    payload: bytes,
+    document: dict,
+    mime_type: str = "image/jpeg",
+):
     pushed = client.post(
         "/api/sync/receipts/push",
         headers=auth_headers,
@@ -238,20 +601,67 @@ def queue_receipt(client, auth_headers, payload: bytes, document: dict):
         headers=auth_headers,
         data={
             "sha256": digest,
-            "mimeType": "image/jpeg",
+            "mimeType": mime_type,
             "receiptId": document["id"],
             "locale": "it-IT",
             "currency": "EUR",
         },
-        files={"file": ("receipt.jpg", payload, "image/jpeg")},
+        files={
+            "file": (
+                "receipt.webp" if mime_type == "image/webp" else "receipt.jpg",
+                payload,
+                mime_type,
+            )
+        },
     )
     assert uploaded.status_code == 200
     return uploaded.json()["aiJob"]
 
 
+def test_expired_chatgpt_authorization_waits_without_consuming_job_attempts(
+    client, auth_headers, openai_codex_service
+):
+    settings = get_settings()
+    openai_codex_service.connected = True
+    selected = client.put(
+        "/api/ai/providers/openai/model",
+        headers=auth_headers,
+        json={"model": "gpt-codex-test"},
+    )
+    assert selected.status_code == 200
+    openai_codex_service.structured_completion = AsyncMock(
+        side_effect=PermissionError("The ChatGPT authorization has expired")
+    )
+    payload = jpeg_bytes()
+    digest = hashlib.sha256(payload).hexdigest()
+    queued = queue_receipt(
+        client,
+        auth_headers,
+        payload,
+        receipt_document(digest),
+    )
+    with SessionLocal() as session:
+        job = session.get(AIExtractionJob, queued["id"])
+        job.attempts = settings.ai_worker_max_attempts - 1
+        session.commit()
+
+    assert asyncio.run(process_next_ai_job(settings)) is True
+
+    job = client.get(
+        f"/api/ai/jobs/{queued['receiptId']}", headers=auth_headers
+    ).json()
+    assert job["status"] == "pending"
+    assert job["attempts"] == settings.ai_worker_max_attempts - 1
+    assert job["nextAttemptAt"] is not None
+    assert job["lastErrorCode"] == "provider_authentication"
+
+
 def test_backend_worker_extracts_and_syncs_receipt_without_client_ai_call(
     client, auth_headers, monkeypatch
 ):
+    settings = get_settings()
+    monkeypatch.setattr(settings, "ollama_ocr_model", "glm-ocr:latest")
+    monkeypatch.setattr(settings, "ollama_audit_model", "gemma4:12b-it-q8_0")
     configure_ollama(client, auth_headers, monkeypatch)
     extraction = ReceiptExtraction.model_validate({
         "schemaVersion": 1,
@@ -278,14 +688,19 @@ def test_backend_worker_extracts_and_syncs_receipt_without_client_ai_call(
     })
     extraction_mock = AsyncMock(return_value=extraction)
     monkeypatch.setattr(OllamaProvider, "extract_receipt", extraction_mock)
-    payload = jpeg_bytes()
+    payload = webp_bytes()
     digest = hashlib.sha256(payload).hexdigest()
     queued = queue_receipt(
-        client, auth_headers, payload, receipt_document(digest)
+        client,
+        auth_headers,
+        payload,
+        receipt_document(digest),
+        mime_type="image/webp",
     )
 
-    assert asyncio.run(process_next_ai_job(get_settings())) is True
+    assert asyncio.run(process_next_ai_job(settings)) is True
     extraction_mock.assert_awaited_once()
+    assert extraction_mock.await_args.args[1] == "image/webp"
     job = client.get(
         f"/api/ai/jobs/{queued['receiptId']}", headers=auth_headers
     ).json()
@@ -294,7 +709,7 @@ def test_backend_worker_extracts_and_syncs_receipt_without_client_ai_call(
     receipts = client.post(
         "/api/sync/receipts/pull",
         headers=auth_headers,
-        json={"checkpoint": {"sequence": 0}, "batchSize": 500},
+        json={"checkpoint": {"sequence": 0}, "batchSize": 100},
     ).json()["documents"]
     updated = next(entry for entry in receipts if entry["id"] == queued["receiptId"])
     assert updated["status"] == "needs_review"
@@ -303,13 +718,13 @@ def test_backend_worker_extracts_and_syncs_receipt_without_client_ai_call(
     assert updated["ai"] == {
         "providerId": "ollama",
         "modelId": "vision:latest",
-        "promptVersion": "receipt-v1",
+        "promptVersion": "receipt-v6-audited-lean-contract",
         "schemaVersion": 1,
     }
     items = client.post(
         "/api/sync/receipt_items/pull",
         headers=auth_headers,
-        json={"checkpoint": {"sequence": 0}, "batchSize": 500},
+        json={"checkpoint": {"sequence": 0}, "batchSize": 100},
     ).json()["documents"]
     assert [(entry["normalizedName"], entry["totalPriceMinor"]) for entry in items] == [
         ("Pane", 250)
@@ -336,6 +751,65 @@ def test_backend_worker_never_overwrites_a_user_confirmed_receipt(
     with SessionLocal() as session:
         job = session.get(AIExtractionJob, queued["id"])
         assert job.status == "skipped"
+
+
+def test_confirmed_receipt_can_be_explicitly_reanalyzed(
+    client, auth_headers, monkeypatch
+):
+    configure_ollama(client, auth_headers, monkeypatch)
+    payload = jpeg_bytes()
+    digest = hashlib.sha256(payload).hexdigest()
+    queued = queue_receipt(
+        client,
+        auth_headers,
+        payload,
+        receipt_document(digest, confirmed=True),
+    )
+    item = {
+        "id": "confirmed-item",
+        "receiptId": queued["receiptId"],
+        "rawName": "PANE CORRETTO",
+        "normalizedName": "Pane corretto",
+        "quantity": 1,
+        "unitPriceMinor": 250,
+        "totalPriceMinor": 250,
+        "categoryId": "food_grocery",
+        "confidence": 1,
+        "position": 0,
+        "userEdited": True,
+        "updatedAt": "2026-07-14T11:00:00Z",
+        "updatedByDevice": "phone",
+        "_deleted": False,
+    }
+    pushed = client.post(
+        "/api/sync/receipt_items/push",
+        headers=auth_headers,
+        json={"rows": [{"assumedMasterState": None, "newDocumentState": item}]},
+    )
+    assert pushed.json() == {"conflicts": []}
+
+    response = client.post(
+        f"/api/ai/jobs/{queued['receiptId']}/reanalyze",
+        headers=auth_headers,
+    )
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "pending"
+    receipts = client.post(
+        "/api/sync/receipts/pull",
+        headers=auth_headers,
+        json={"checkpoint": {"sequence": 0}, "batchSize": 100},
+    ).json()["documents"]
+    updated = next(entry for entry in receipts if entry["id"] == queued["receiptId"])
+    assert updated["status"] == "queued"
+    assert updated["userConfirmed"] is False
+    items = client.post(
+        "/api/sync/receipt_items/pull",
+        headers=auth_headers,
+        json={"checkpoint": {"sequence": 0}, "batchSize": 100},
+    ).json()["documents"]
+    updated_item = next(entry for entry in items if entry["id"] == item["id"])
+    assert updated_item["userEdited"] is False
 
 
 def test_backend_queue_backfills_a_legacy_blank_queued_receipt(
@@ -367,7 +841,7 @@ def test_backend_queue_backfills_a_legacy_blank_queued_receipt(
     receipts = client.post(
         "/api/sync/receipts/pull",
         headers=auth_headers,
-        json={"checkpoint": {"sequence": 0}, "batchSize": 500},
+        json={"checkpoint": {"sequence": 0}, "batchSize": 100},
     ).json()["documents"]
     updated = next(entry for entry in receipts if entry["id"] == legacy["id"])
     assert updated["status"] == "queued"
@@ -442,3 +916,285 @@ def test_ollama_disables_thinking_and_falls_back_when_schema_grammar_is_rejected
     assert "format" in requests[0]
     assert "format" not in requests[1]
     assert "Schema JSON obbligatorio" in requests[1]["messages"][0]["content"]
+
+
+def test_ollama_reextracts_once_with_recovery_prompt_after_invalid_output(monkeypatch):
+    requests = []
+    invalid = {
+        "schemaVersion": 1,
+        "documentType": "receipt",
+        "merchant": {"rawName": "MARKET", "normalizedName": "Market"},
+        "transactionDate": "2026-07-14",
+        "currency": "EUR",
+        "subtotalMinor": None,
+        "taxMinor": -121,
+        "discountMinor": 121,
+        "totalMinor": 646,
+        "categoryId": "food_grocery",
+        "items": [],
+        "confidence": None,
+        "warnings": [],
+    }
+    recovered = {**invalid, "taxMinor": 0}
+
+    class FakeResponse:
+        status_code = 200
+        text = ""
+
+        def __init__(self, body):
+            self._body = body
+
+        def json(self):
+            return self._body
+
+        def raise_for_status(self):
+            return None
+
+    class FakeAsyncClient:
+        def __init__(self, **_kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def post(self, _url, json):
+            requests.append(json)
+            extraction = invalid if len(requests) == 1 else recovered
+            return FakeResponse({
+                "done_reason": "stop",
+                "message": {"content": json_module.dumps(extraction)},
+            })
+
+    json_module = json
+    monkeypatch.setattr("app.providers.ollama.httpx.AsyncClient", FakeAsyncClient)
+    provider = OllamaProvider("http://ollama", "qwen3.5:9b-q8_0")
+    result = asyncio.run(provider.extract_receipt(
+        jpeg_bytes(), "image/jpeg", ExtractionContext(locale="it-IT", currency="EUR")
+    ))
+
+    assert result.tax_minor == 0
+    assert result.discount_minor == 121
+    assert len(requests) == 2
+    primary_prompt = requests[0]["messages"][0]["content"]
+    recovery_prompt = requests[1]["messages"][0]["content"]
+    assert "Regole per sconti e riepiloghi fiscali" not in primary_prompt
+    assert "Regole per sconti e riepiloghi fiscali" in recovery_prompt
+    assert "previous_output" not in recovery_prompt
+
+
+def test_ollama_runs_qwen_ocr_and_thinking_audit_pipeline(monkeypatch):
+    requests = []
+    candidate = {
+        "schemaVersion": 1,
+        "documentType": "receipt",
+        "merchant": {"rawName": "MARKET", "normalizedName": "Market"},
+        "transactionDate": "2026-07-14",
+        "currency": "EUR",
+        "subtotalMinor": None,
+        "taxMinor": 0,
+        "discountMinor": None,
+        "totalMinor": 250,
+        "categoryId": "food_grocery",
+        "items": [
+            {
+                "rawName": "PANE",
+                "normalizedName": "Pane",
+                "quantity": 1,
+                "unitPriceMinor": 350,
+                "totalPriceMinor": 350,
+                "categoryId": "food_grocery",
+                "confidence": 0.9,
+            },
+            {
+                "rawName": "SCONTO",
+                "normalizedName": "Sconto",
+                "quantity": None,
+                "unitPriceMinor": -100,
+                "totalPriceMinor": -100,
+                "categoryId": "other",
+                "confidence": 0.9,
+            },
+        ],
+        "confidence": 0.9,
+        "warnings": [],
+    }
+    audited = {
+        **candidate,
+        "merchant": {
+            "rawName": "MARKET ROMA",
+            "normalizedName": "Market Roma",
+        },
+        "discountMinor": 100,
+        "items": candidate["items"][:1],
+    }
+
+    class FakeResponse:
+        status_code = 200
+        text = ""
+
+        def __init__(self, body):
+            self._body = body
+
+        def json(self):
+            return self._body
+
+        def raise_for_status(self):
+            return None
+
+    class FakeAsyncClient:
+        def __init__(self, **_kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def post(self, _url, json):
+            requests.append(json)
+            if json["model"] == "glm-ocr:latest":
+                content = "MARKET ROMA\nPANE 3,50\nSCONTO -1,00\nTOTALE 2,50"
+            elif json["model"] == "gemma4:12b-it-q8_0":
+                content = json_module.dumps(audited)
+            else:
+                content = json_module.dumps(candidate)
+            return FakeResponse({
+                "done_reason": "stop",
+                "message": {"content": content},
+            })
+
+    json_module = json
+    monkeypatch.setattr("app.providers.ollama.httpx.AsyncClient", FakeAsyncClient)
+    provider = OllamaProvider(
+        "http://ollama",
+        "qwen3.5:9b-q8_0",
+        ocr_model="glm-ocr:latest",
+        audit_model="gemma4:12b-it-q8_0",
+    )
+    result = asyncio.run(provider.extract_receipt(
+        jpeg_bytes(), "image/jpeg", ExtractionContext(locale="it-IT", currency="EUR")
+    ))
+
+    assert result.merchant.normalized_name == "Market Roma"
+    assert result.discount_minor == 100
+    assert [item.normalized_name for item in result.items] == ["Pane"]
+    assert provider.prompt_version == "receipt-v6-audited-lean-contract"
+    assert [request["model"] for request in requests] == [
+        "qwen3.5:9b-q8_0",
+        "glm-ocr:latest",
+        "gemma4:12b-it-q8_0",
+    ]
+    assert requests[0]["think"] is False
+    assert requests[1]["messages"][0]["content"] == "Text Recognition:"
+    assert "format" not in requests[1]
+    assert requests[2]["think"] is True
+    assert requests[2]["options"] == {
+        "temperature": 0,
+        "num_ctx": 16384,
+        "num_predict": 8192,
+    }
+    audit_prompt = requests[2]["messages"][0]["content"]
+    assert "<independent_ocr>" in audit_prompt
+    assert "<candidate_extraction>" in audit_prompt
+    assert '"discountMinor":100' in audit_prompt
+    assert '"totalPriceMinor":-100' not in audit_prompt
+    assert all(
+        request["messages"][0]["role"] == "user" for request in requests
+    )
+
+
+def test_ollama_keeps_valid_candidate_when_audit_is_invalid(monkeypatch):
+    requests = []
+    candidate = {
+        "schemaVersion": 1,
+        "documentType": "receipt",
+        "merchant": {"rawName": "MARKET", "normalizedName": "Market"},
+        "transactionDate": "2026-07-14",
+        "currency": "EUR",
+        "subtotalMinor": None,
+        "taxMinor": 0,
+        "discountMinor": 0,
+        "totalMinor": 250,
+        "categoryId": "food_grocery",
+        "items": [],
+        "confidence": 0.9,
+        "warnings": [],
+    }
+    invalid_audit = {**candidate, "taxMinor": -1}
+
+    class FakeResponse:
+        status_code = 200
+        text = ""
+
+        def __init__(self, content):
+            self._content = content
+
+        def json(self):
+            return {
+                "done_reason": "stop",
+                "message": {"content": self._content},
+            }
+
+        def raise_for_status(self):
+            return None
+
+    class FakeAsyncClient:
+        def __init__(self, **_kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def post(self, _url, json):
+            requests.append(json)
+            if json["model"] == "glm-ocr:latest":
+                return FakeResponse("MARKET\nTOTALE 2,50")
+            content = invalid_audit if json["model"].startswith("gemma4") else candidate
+            return FakeResponse(json_module.dumps(content))
+
+    json_module = json
+    monkeypatch.setattr("app.providers.ollama.httpx.AsyncClient", FakeAsyncClient)
+    provider = OllamaProvider(
+        "http://ollama",
+        "qwen3.5:9b-q8_0",
+        ocr_model="glm-ocr:latest",
+        audit_model="gemma4:12b-it-q8_0",
+    )
+    result = asyncio.run(provider.extract_receipt(
+        jpeg_bytes(), "image/jpeg", ExtractionContext(locale="it-IT", currency="EUR")
+    ))
+
+    assert result.tax_minor == 0
+    assert result.merchant.normalized_name == "Market"
+    assert len(requests) == 3
+
+
+def test_ollama_pipeline_health_requires_every_backend_model(monkeypatch):
+    provider = OllamaProvider(
+        "http://ollama",
+        "qwen3.5:9b-q8_0",
+        ocr_model="glm-ocr:latest",
+        audit_model="gemma4:12b-it-q8_0",
+    )
+    monkeypatch.setattr(
+        provider,
+        "list_models",
+        AsyncMock(return_value=[
+            "qwen3.5:9b-q8_0",
+            "glm-ocr:latest",
+            "gemma4:12b-it-q8_0",
+        ]),
+    )
+    assert asyncio.run(provider.health_check()) is True
+    provider.list_models = AsyncMock(return_value=[
+        "qwen3.5:9b-q8_0",
+        "glm-ocr:latest",
+    ])
+    assert asyncio.run(provider.health_check()) is False

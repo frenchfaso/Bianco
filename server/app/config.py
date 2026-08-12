@@ -2,7 +2,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
-from pydantic import Field
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -39,6 +39,18 @@ class Settings(BaseSettings):
         "none", alias="BIANCO_AI_PROVIDER"
     )
     max_upload_bytes: int = Field(10 * 1024 * 1024, alias="BIANCO_MAX_UPLOAD_BYTES")
+    max_image_pixels: int = Field(
+        64_000_000,
+        ge=1_000_000,
+        le=200_000_000,
+        alias="BIANCO_MAX_IMAGE_PIXELS",
+    )
+    max_image_dimension: int = Field(
+        16_384,
+        ge=1_024,
+        le=65_535,
+        alias="BIANCO_MAX_IMAGE_DIMENSION",
+    )
     ai_worker_enabled: bool = Field(True, alias="BIANCO_AI_WORKER_ENABLED")
     ai_worker_poll_seconds: float = Field(
         2.0, ge=0.25, le=60, alias="BIANCO_AI_WORKER_POLL_SECONDS"
@@ -46,10 +58,19 @@ class Settings(BaseSettings):
     ai_worker_max_attempts: int = Field(
         5, ge=1, le=20, alias="BIANCO_AI_WORKER_MAX_ATTEMPTS"
     )
+    ai_worker_orphan_timeout_seconds: int = Field(
+        24 * 60 * 60,
+        ge=60,
+        le=30 * 24 * 60 * 60,
+        alias="BIANCO_AI_WORKER_ORPHAN_TIMEOUT_SECONDS",
+    )
 
-    openai_base_url: str = Field("https://api.openai.com/v1", alias="OPENAI_BASE_URL")
-    openai_api_key: str = Field("", alias="OPENAI_API_KEY")
-    openai_model: str = Field("", alias="OPENAI_MODEL")
+    openai_request_timeout_seconds: int = Field(
+        600, ge=30, le=1800, alias="BIANCO_OPENAI_REQUEST_TIMEOUT_SECONDS"
+    )
+    openai_reasoning_effort: Literal[
+        "none", "low", "medium", "high", "xhigh", "max"
+    ] = Field("medium", alias="BIANCO_OPENAI_REASONING_EFFORT")
 
     openai_compatible_base_url: str = Field(
         "", alias="OPENAI_COMPATIBLE_BASE_URL"
@@ -61,10 +82,27 @@ class Settings(BaseSettings):
 
     ollama_base_url: str = Field("", alias="OLLAMA_BASE_URL")
     ollama_model: str = Field("", alias="OLLAMA_MODEL")
+    ollama_ocr_model: str = Field("", alias="OLLAMA_OCR_MODEL")
+    ollama_audit_model: str = Field("", alias="OLLAMA_AUDIT_MODEL")
+
+    @field_validator("sync_token", "secret_key")
+    @classmethod
+    def reject_documented_placeholder_secrets(cls, value: str) -> str:
+        placeholders = {
+            "replace-with-a-long-random-secret",
+            "replace-with-an-independent-secret-of-at-least-32-characters",
+        }
+        if value in placeholders:
+            raise ValueError("Replace the documented placeholder with a random secret")
+        return value
 
     @property
     def files_dir(self) -> Path:
         return self.data_dir / "files"
+
+    @property
+    def openai_oauth_path(self) -> Path:
+        return self.data_dir / "openai-oauth.json.enc"
 
 
 @lru_cache

@@ -13,12 +13,13 @@ export async function getImageUrl(db, imageHash, attachmentId = 'thumbnail') {
 }
 
 export async function storeRemoteImage(db, receiptId, imageHash, blob, variant) {
+  const mimeType = blob.type === 'image/webp' ? 'image/webp' : 'image/jpeg'
   let image = await db.images.findOne(imageHash).exec()
   if (!image) {
     image = await db.images.insert({
       id: imageHash,
       receiptId,
-      mimeType: 'image/jpeg',
+      mimeType,
       width: 0,
       height: 0,
       sizeBytes: variant === 'full' ? blob.size : 0,
@@ -27,7 +28,9 @@ export async function storeRemoteImage(db, receiptId, imageHash, blob, variant) 
       createdAt: nowIso()
     })
   }
-  await image.putAttachment({ id: variant, data: blob, type: 'image/jpeg' })
-  if (variant === 'full') await image.incrementalPatch({ sizeBytes: blob.size })
+  await image.putAttachment({ id: variant, data: blob, type: mimeType })
+  if (variant === 'full') {
+    await image.incrementalPatch({ mimeType, sizeBytes: blob.size })
+  }
   return image
 }

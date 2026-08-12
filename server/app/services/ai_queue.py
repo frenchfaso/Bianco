@@ -1,7 +1,10 @@
 import asyncio
 import json
 import logging
+import threading
+import time
 import uuid
+from contextlib import suppress
 
 import httpx
 from pydantic import ValidationError
@@ -11,6 +14,7 @@ from sqlalchemy.orm import Session
 from app.config import Settings
 from app.database import SessionLocal
 from app.models import AIExtractionJob, SyncDocument
+from app.providers.common import RECEIPT_PROMPT_VERSION
 from app.repositories.ai_jobs import (
     claim_next_extraction,
     enqueue_extraction,
@@ -26,7 +30,7 @@ from app.repositories.sync import (
 from app.schemas.ai import ExtractionContext, ReceiptExtraction
 from app.services.ai import select_provider
 from app.services.events import broadcaster
-from app.services.files import file_path
+from app.services.files import file_path, mime_type_for_path
 
 logger = logging.getLogger("bianco.ai-worker")
 BACKEND_DEVICE_ID = "bianco-ai-worker"
@@ -37,6 +41,47 @@ class ReceiptNotReady(RuntimeError):
 
 
 _worker_wake: asyncio.Event | None = None
+_worker_state_lock = threading.Lock()
+_worker_state: dict[str, object] = {
+    "enabled": False,
+    "state": "disabled",
+    "heartbeat": 0.0,
+    "restarts": 0,
+    "lastError": None,
+}
+
+
+def configure_ai_worker_health(enabled: bool) -> None:
+    with _worker_state_lock:
+        _worker_state.update(
+            enabled=enabled,
+            state="starting" if enabled else "disabled",
+            heartbeat=time.monotonic() if enabled else 0.0,
+            restarts=0,
+            lastError=None,
+        )
+
+
+def _set_worker_health(state: str, *, error: Exception | None = None) -> None:
+    with _worker_state_lock:
+        _worker_state["state"] = state
+        _worker_state["heartbeat"] = time.monotonic()
+        _worker_state["lastError"] = type(error).__name__ if error else None
+
+
+def _heartbeat_worker() -> None:
+    with _worker_state_lock:
+        _worker_state["heartbeat"] = time.monotonic()
+
+
+def ai_worker_ready(settings: Settings) -> bool:
+    if not settings.ai_worker_enabled:
+        return True
+    with _worker_state_lock:
+        state = str(_worker_state["state"])
+        heartbeat = float(_worker_state["heartbeat"])
+    stale_after = max(15.0, settings.ai_worker_poll_seconds * 5)
+    return state in {"starting", "running"} and time.monotonic() - heartbeat <= stale_after
 
 
 def wake_ai_worker() -> None:
@@ -46,6 +91,44 @@ def wake_ai_worker() -> None:
 
 def mark_receipt_queued(session: Session, receipt_id: str) -> bool:
     return _set_receipt_status(session, receipt_id, "queued")
+
+
+def mark_receipt_for_reanalysis(session: Session, receipt_id: str) -> bool:
+    """Explicitly release a confirmed receipt while preserving later user edits."""
+    document = read_document(session, "receipts", receipt_id)
+    if (
+        not document
+        or document.get("_deleted")
+        or not isinstance(document.get("imageHash"), str)
+    ):
+        return False
+    now = utc_now()
+    write_server_document(
+        session,
+        "receipts",
+        {
+            **document,
+            "status": "queued",
+            "userConfirmed": False,
+            "updatedAt": now,
+            "updatedByDevice": BACKEND_DEVICE_ID,
+        },
+        timestamp=now,
+    )
+    for item in _existing_item_documents(session, receipt_id):
+        write_server_document(
+            session,
+            "receipt_items",
+            {
+                **item,
+                "userEdited": False,
+                "updatedAt": now,
+                "updatedByDevice": BACKEND_DEVICE_ID,
+            },
+            timestamp=now,
+        )
+    session.commit()
+    return True
 
 
 def _protected_receipt(document: dict | None) -> bool:
@@ -89,6 +172,17 @@ def _existing_item_documents(session: Session, receipt_id: str) -> list[dict]:
         for document in documents
         if document.get("receiptId") == receipt_id and not document.get("_deleted")
     ]
+
+
+def _dominant_item_category(extraction: ReceiptExtraction) -> str:
+    totals: dict[str, int] = {}
+    for item in extraction.items:
+        category_id = item.category_id or "other"
+        weight = max(1, item.total_price_minor or 0)
+        totals[category_id] = totals.get(category_id, 0) + weight
+    if not totals:
+        return extraction.category_id or "other"
+    return max(totals, key=totals.get)
 
 
 def _backfill_legacy_extractions(session: Session, settings: Settings) -> int:
@@ -170,6 +264,7 @@ def _apply_extraction(
     *,
     provider_id: str,
     model: str | None,
+    prompt_version: str,
 ) -> bool:
     receipt = read_document(session, "receipts", job.receipt_id)
     if _protected_receipt(receipt):
@@ -197,13 +292,14 @@ def _apply_extraction(
             "taxMinor": extraction.tax_minor,
             "discountMinor": extraction.discount_minor,
             "totalMinor": extraction.total_minor,
-            "categoryId": extraction.category_id,
+            # Kept for older clients; item-level categories are authoritative.
+            "categoryId": _dominant_item_category(extraction),
             "overallConfidence": extraction.confidence,
             "warnings": extraction.warnings,
             "ai": {
                 "providerId": provider_id,
                 "modelId": model,
-                "promptVersion": "receipt-v1",
+                "promptVersion": prompt_version,
                 "schemaVersion": extraction.schema_version,
             },
             "updatedAt": now,
@@ -259,6 +355,15 @@ def _failure_details(error: Exception) -> tuple[str, str, int, bool]:
         return "receipt_not_ready", "Waiting for receipt synchronization", 2, False
     if isinstance(error, LookupError):
         return "provider_unavailable", "Waiting for an active AI provider", 30, False
+    if isinstance(error, PermissionError):
+        return "provider_authentication", "AI provider needs to be reconnected", 300, False
+    if isinstance(error, httpx.HTTPStatusError):
+        status = error.response.status_code
+        if status in {401, 403}:
+            return "provider_authentication", "AI provider needs to be reconnected", 300, False
+        if status == 429 or status >= 500:
+            return "provider_unavailable", "AI provider is temporarily unavailable", 30, True
+        return "provider_request_rejected", "AI provider rejected the request", 30, True
     if isinstance(error, (httpx.HTTPError, asyncio.TimeoutError)):
         return "provider_unavailable", "AI provider is temporarily unavailable", 30, True
     if isinstance(error, (ValidationError, KeyError, ValueError)):
@@ -290,13 +395,20 @@ async def process_next_ai_job(settings: Settings) -> bool:
             provider = select_provider(settings, session, job.provider_id)
             provider_id = provider.id
             model = getattr(provider, "model", None)
+            prompt_version = getattr(
+                provider,
+                "prompt_version",
+                RECEIPT_PROMPT_VERSION,
+            )
             context = ExtractionContext(locale=job.locale, currency=job.currency)
-            image = file_path(settings.files_dir, job.image_hash).read_bytes()
+            image_path = file_path(settings.files_dir, job.image_hash)
+            image = image_path.read_bytes()
+            image_mime_type = mime_type_for_path(image_path)
             changed = _set_receipt_status(session, job.receipt_id, "processing")
         if changed:
             await broadcaster.publish_resync()
 
-        extraction = await provider.extract_receipt(image, "image/jpeg", context)
+        extraction = await provider.extract_receipt(image, image_mime_type, context)
         with SessionLocal() as session:
             job = session.get(AIExtractionJob, job_id)
             if job is None:
@@ -307,6 +419,7 @@ async def process_next_ai_job(settings: Settings) -> bool:
                 extraction,
                 provider_id=provider_id,
                 model=model,
+                prompt_version=prompt_version,
             )
         if changed:
             await broadcaster.publish_resync()
@@ -324,6 +437,11 @@ async def process_next_ai_job(settings: Settings) -> bool:
                     delay_seconds=delay,
                     increment_attempts=increment_attempts,
                     max_attempts=settings.ai_worker_max_attempts,
+                    max_wait_seconds=(
+                        settings.ai_worker_orphan_timeout_seconds
+                        if code == "receipt_not_ready"
+                        else None
+                    ),
                 )
                 changed = _set_receipt_status(
                     session, job.receipt_id, "failed" if terminal else "queued"
@@ -341,18 +459,50 @@ async def process_next_ai_job(settings: Settings) -> bool:
 async def run_ai_worker(settings: Settings) -> None:
     global _worker_wake
     _worker_wake = asyncio.Event()
-    with SessionLocal() as session:
-        requeue_interrupted_extractions(session)
-        backfilled = _backfill_legacy_extractions(session, settings)
-    if backfilled:
-        logger.info("Backfilled %s legacy AI extraction jobs", backfilled)
+    try:
+        with SessionLocal() as session:
+            requeue_interrupted_extractions(session)
+            backfilled = _backfill_legacy_extractions(session, settings)
+        if backfilled:
+            logger.info("Backfilled %s legacy AI extraction jobs", backfilled)
+        while True:
+            if await process_next_ai_job(settings):
+                continue
+            try:
+                await asyncio.wait_for(
+                    _worker_wake.wait(), timeout=settings.ai_worker_poll_seconds
+                )
+            except TimeoutError:
+                pass
+            _worker_wake.clear()
+    finally:
+        _worker_wake = None
+
+
+async def supervise_ai_worker(settings: Settings) -> None:
+    """Restart an unexpectedly terminated queue worker and expose a heartbeat."""
+    configure_ai_worker_health(True)
+    heartbeat_interval = min(5.0, max(1.0, settings.ai_worker_poll_seconds))
     while True:
-        if await process_next_ai_job(settings):
-            continue
+        worker = asyncio.create_task(run_ai_worker(settings), name="bianco-ai-worker-runner")
+        _set_worker_health("running")
         try:
-            await asyncio.wait_for(
-                _worker_wake.wait(), timeout=settings.ai_worker_poll_seconds
-            )
-        except TimeoutError:
-            pass
-        _worker_wake.clear()
+            while not worker.done():
+                _heartbeat_worker()
+                done, _ = await asyncio.wait({worker}, timeout=heartbeat_interval)
+                if done:
+                    break
+            await worker
+            raise RuntimeError("AI worker stopped unexpectedly")
+        except asyncio.CancelledError:
+            worker.cancel()
+            with suppress(asyncio.CancelledError):
+                await worker
+            _set_worker_health("stopped")
+            raise
+        except Exception as error:
+            with _worker_state_lock:
+                _worker_state["restarts"] = int(_worker_state["restarts"]) + 1
+            _set_worker_health("restarting", error=error)
+            logger.exception("AI queue worker crashed; restarting")
+            await asyncio.sleep(min(5.0, max(1.0, settings.ai_worker_poll_seconds)))

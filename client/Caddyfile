@@ -15,8 +15,11 @@
 		X-Frame-Options "DENY"
 	}
 
+	@freshAppShell path /sw.js /index.html /manifest.webmanifest
+	header @freshAppShell Cache-Control "no-cache, no-store, must-revalidate"
+
 	@protected {
-		not path /auth/* /assets/* /sw.js /workbox-* /manifest.webmanifest /icon.svg /theme-init.js /index.html
+		not path /auth/* /assets/* /sw.js /workbox-* /manifest.webmanifest /icon.svg /icon-*.png /apple-touch-icon.png /theme-init.js /index.html
 	}
 
 	forward_auth @protected api:8000 {
@@ -28,6 +31,10 @@
 	}
 
 	handle /api/* {
+		request_body {
+			# Leave room for multipart framing while enforcing the application upload cap.
+			max_size 12MB
+		}
 		reverse_proxy api:8000 {
 			header_up Authorization "Bearer {$BIANCO_SYNC_TOKEN}"
 		}
