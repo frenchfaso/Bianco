@@ -117,6 +117,14 @@ class EvalMetricTests(unittest.TestCase):
 
 
 class EvalSafetyTests(unittest.TestCase):
+    def test_output_path_cannot_replace_a_dataset_input(self):
+        source = Path(evals.run.__code__.co_filename).read_text(encoding="utf-8")
+
+        self.assertIn(
+            'raise EvalPreflightError("output path cannot overwrite a label or image input")',
+            source,
+        )
+
     def test_image_path_rejects_traversal_and_symlinks(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary) / "images"

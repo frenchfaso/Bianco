@@ -1001,6 +1001,15 @@ async def run(args: argparse.Namespace) -> None:
         max_image_pixels=settings.max_image_pixels,
         max_image_dimension=settings.max_image_dimension,
     )
+    output_path = args.output.expanduser().resolve(strict=False)
+    try:
+        labels_path = (args.dataset.expanduser().resolve(strict=True) / "labels.json")
+    except (FileNotFoundError, OSError) as error:
+        raise EvalPreflightError("dataset changed after validation") from error
+    protected_inputs = {labels_path, *(case.image_path for case in cases)}
+    if output_path in protected_inputs:
+        raise EvalPreflightError("output path cannot overwrite a label or image input")
+    args.output = output_path
     output_schema = schema_for(ReceiptExtraction)
     contract_hash, evaluation_fingerprint = contract_fingerprint(
         cases,
