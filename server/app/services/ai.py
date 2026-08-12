@@ -22,24 +22,30 @@ def build_provider(
     definition = configuration.definition
     if definition.id == "openai":
         return OpenAISubscriptionProvider(
-            configuration.model,
+            configuration.receipt_model,
             get_openai_codex_service(settings),
-            settings.openai_reasoning_effort,
+            settings.effective_openai_receipt_reasoning_effort,
+            insight_model=configuration.insight_model,
+            insight_reasoning_effort=(
+                settings.effective_openai_insight_reasoning_effort
+            ),
         )
     if definition.id == "ollama":
         return OllamaProvider(
             configuration.base_url,
-            configuration.model,
+            configuration.receipt_model,
             ocr_model=settings.ollama_ocr_model,
             audit_model=settings.ollama_audit_model,
+            insight_model=configuration.insight_model,
         )
     return OpenAICompatibleProvider(
         configuration.base_url,
         configuration.api_key,
-        configuration.model,
+        configuration.receipt_model,
         provider_id=definition.id,
         label=definition.label,
         requires_api_key=definition.requires_api_key,
+        insight_model=configuration.insight_model,
     )
 
 

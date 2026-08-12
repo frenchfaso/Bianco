@@ -52,7 +52,9 @@ ChatGPT device-login flow also used by OpenCode and Pi, then accesses the Codex 
 included with your ChatGPT plan directly over HTTPS. No Codex runtime is installed, and
 it never uses an OpenAI API key or API billing. OAuth credentials remain in the
 backend data volume, never in the PWA, while the available model list comes from
-the connected account. This is the same Codex login and transport family used by
+the connected account. Receipt extraction and spending insights can use separate
+backend-only models and reasoning efforts; the PWA only exposes the provider
+connection. This is the same Codex login and transport family used by
 established open-source clients, implemented as a small compatibility adapter rather
 than through the Codex runtime. Because that transport is not an OpenAI API Platform
 contract, the adapter remains experimental: an upstream change can require a Bianco
@@ -63,6 +65,9 @@ not install Ollama or download models for you. The API container must be able to
 reach the configured endpoint. Set `OLLAMA_MODEL`, `OLLAMA_OCR_MODEL`, and
 `OLLAMA_AUDIT_MODEL` to enable the selected Qwen → GLM-OCR → Gemma receipt
 pipeline; leaving either secondary model blank keeps the direct single-model flow.
+`OLLAMA_INSIGHT_MODEL` optionally routes summaries to another local model and
+falls back to `OLLAMA_MODEL`. `OPENAI_COMPATIBLE_INSIGHT_MODEL` behaves the same
+way for an OpenAI-compatible backend.
 The Codex login is intentionally not part of SQLite backups; reconnect ChatGPT
 after restoring Bianco onto a different server.
 
@@ -90,8 +95,11 @@ The versioned archive contains a consistent SQLite snapshot, receipt images, and
 checksums. Keep backups and `BIANCO_SECRET_KEY` together securely: the same key
 is required to decrypt saved provider credentials after a restore. ChatGPT device
 credentials are intentionally excluded and must be reconnected on a new server.
-`BIANCO_OPENAI_REASONING_EFFORT=medium` is the conservative default for GPT-5.6;
-change it only after comparing the labelled receipt eval, not from a single example.
+Use `BIANCO_OPENAI_RECEIPT_MODEL` and `BIANCO_OPENAI_INSIGHT_MODEL` to route the
+two workloads independently. Their corresponding
+`BIANCO_OPENAI_*_REASONING_EFFORT` settings default to `medium`; change them only
+after representative evals. The legacy `BIANCO_OPENAI_REASONING_EFFORT` remains a
+common fallback for existing deployments.
 
 To inspect receipt image files that are no longer referenced, run the safe dry-run:
 

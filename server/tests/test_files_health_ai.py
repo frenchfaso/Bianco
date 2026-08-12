@@ -2,6 +2,7 @@ import asyncio
 import hashlib
 import io
 import json
+import re
 from unittest.mock import AsyncMock
 
 import httpx
@@ -12,14 +13,21 @@ from sqlalchemy import select
 
 from app.database import SessionLocal
 from app.config import get_settings
-from app.models import AIExtractionJob, AIProviderConfiguration
-from app.providers.common import INSIGHT_PROMPT, insight_prompt_data
+from app.models import AIExtractionJob, AIProviderConfiguration, AISettings
+from app.providers.common import BASE_INSTRUCTIONS, INSIGHT_PROMPT, insight_prompt_data
 from app.providers.openai_compatible import OpenAICompatibleProvider
+from app.providers.openai_subscription import OpenAISubscriptionProvider
 from app.providers.ollama import OllamaProvider
-from app.repositories.ai_providers import resolve_provider_configuration
+from app.repositories.ai_providers import (
+    resolve_active_provider_id,
+    resolve_provider_configuration,
+)
+from app.routes.ai import insight_configuration_fingerprint
 from app.schemas.ai import (
     ExtractionContext,
+    GeneratedInsights,
     InsightSnapshot,
+    Merchant,
     ProviderConfigurationUpdate,
     ReceiptExtraction,
 )
@@ -193,6 +201,104 @@ def test_ai_schema_rejects_untrusted_provider_values():
         })
 
 
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("categoryId", "groceries"),
+        ("transactionDate", "2026-02-30"),
+        ("currency", "EU1"),
+    ],
+)
+def test_ai_receipt_schema_rejects_invalid_domain_values(field, value):
+    payload = {
+        "schemaVersion": 1,
+        "documentType": "receipt",
+        "merchant": {},
+        "transactionDate": "2026-02-28",
+        "currency": "eur",
+        "categoryId": "other",
+        "items": [{
+            "rawName": "ITEM",
+            "normalizedName": "Item",
+            "quantity": 1,
+            "unitPriceMinor": 100,
+            "totalPriceMinor": 100,
+            "categoryId": "food_grocery",
+            "confidence": 1,
+        }],
+        "warnings": [],
+    }
+    payload[field] = value
+
+    with pytest.raises(ValidationError):
+        ReceiptExtraction.model_validate(payload)
+
+    payload[field] = {
+        "categoryId": "other",
+        "transactionDate": "2026-02-28",
+        "currency": "eur",
+    }[field]
+    validated = ReceiptExtraction.model_validate(payload)
+    assert validated.currency == "EUR"
+
+
+def test_ai_receipt_schema_rejects_invalid_item_category():
+    with pytest.raises(ValidationError):
+        ReceiptExtraction.model_validate({
+            "schemaVersion": 1,
+            "documentType": "receipt",
+            "merchant": {},
+            "currency": "EUR",
+            "categoryId": "other",
+            "items": [{
+                "rawName": "ITEM",
+                "normalizedName": "Item",
+                "categoryId": "invented-category",
+            }],
+            "warnings": [],
+        })
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("totalMinor", 9_007_199_254_740_992),
+        ("totalMinor", 1.5),
+    ],
+)
+def test_ai_receipt_schema_rejects_unsafe_amounts(field, value):
+    with pytest.raises(ValidationError):
+        ReceiptExtraction.model_validate({
+            "schemaVersion": 1,
+            "documentType": "receipt",
+            "merchant": {},
+            "currency": "EUR",
+            "categoryId": "other",
+            field: value,
+            "items": [],
+            "warnings": [],
+        })
+
+
+@pytest.mark.parametrize("quantity", [float("inf"), float("nan"), 1_000_001])
+def test_ai_receipt_schema_rejects_non_finite_or_unsafe_quantity(quantity):
+    with pytest.raises(ValidationError):
+        ReceiptExtraction.model_validate({
+            "schemaVersion": 1,
+            "documentType": "receipt",
+            "merchant": {},
+            "currency": "EUR",
+            "categoryId": "other",
+            "items": [{
+                "rawName": "ITEM",
+                "normalizedName": "Item",
+                "quantity": quantity,
+                "categoryId": "other",
+            }],
+            "warnings": [],
+        })
+
+
 def test_ai_context_restricts_prompt_locale_and_normalizes_currency():
     context = ExtractionContext(locale="fr-FR", currency="eur")
     assert context.currency == "EUR"
@@ -215,21 +321,30 @@ def test_insight_prompt_uses_unambiguous_major_currency_units():
     snapshot = InsightSnapshot(
         locale="it-IT",
         currency="EUR",
-        period={"start": "2026-07-01", "end": "2026-07-21"},
+        period={
+            "start": "2026-07-01", "end": "2026-07-21",
+            "previousStart": "2026-06-01", "previousEnd": "2026-06-21",
+        },
         total=12345,
         previousTotal=10000,
         categories=[{
             "id": "food_grocery", "total": 10000,
-            "previousTotal": 8000, "difference": 2000,
+            "count": 3, "previousTotal": 8000, "difference": 2000,
+            "changePercent": 25.0,
         }],
         merchants=[{
             "id": "Mercato esempio", "total": 3456,
-            "previousTotal": 3000, "difference": 456,
+            "count": 2, "previousTotal": 3000, "difference": 456,
+            "changePercent": 15.2,
         }],
-        items=[{"id": "Prodotto esempio", "total": 1350, "frequency": 1}],
+        items=[{
+            "id": "Prodotto esempio", "total": 1350,
+            "quantity": 1, "frequency": 1,
+        }],
         priceChanges=[{
             "id": "Articolo esempio", "latest": 250,
             "previousAverage": 200, "difference": 50,
+            "changePercent": 25.0,
         }],
     )
 
@@ -260,6 +375,155 @@ def test_ai_endpoint_is_independent_from_readiness(client, auth_headers):
     assert all(entry["configured"] is False for entry in providers)
     assert all(entry["available"] is False for entry in providers)
     assert client.get("/api/health/ready").status_code == 200
+
+
+def test_insight_response_exposes_only_opaque_configuration_fingerprint(
+    client,
+    auth_headers,
+    monkeypatch,
+):
+    class FakeProvider:
+        id = "openai"
+        model = "gpt-5.6-terra"
+        insight_model = "gpt-5.6-sol"
+        insight_reasoning_effort = "high"
+
+        async def generate_insights(self, _snapshot):
+            return GeneratedInsights(observations=["Stable"], suggestion=None)
+
+    monkeypatch.setattr(
+        "app.routes.ai.select_provider",
+        lambda _settings, _session, _provider_id: FakeProvider(),
+    )
+    response = client.post(
+        "/api/ai/insights",
+        headers=auth_headers,
+        json={
+            "locale": "en-GB",
+            "currency": "EUR",
+            "period": {
+                "start": "2026-08-01", "end": "2026-08-31",
+                "previousStart": "2026-07-01", "previousEnd": "2026-07-31",
+            },
+            "total": 0,
+            "previousTotal": 0,
+            "categories": [],
+            "merchants": [],
+            "items": [],
+            "priceChanges": [],
+        },
+    )
+
+    assert response.status_code == 200
+    assert "x-bianco-ai-provider" not in response.headers
+    assert "x-bianco-ai-model" not in response.headers
+    assert "x-bianco-ai-reasoning-effort" not in response.headers
+    assert "x-bianco-ai-prompt-version" not in response.headers
+    fingerprint = response.headers[
+        "x-bianco-ai-configuration-fingerprint"
+    ]
+    assert re.fullmatch(r"[a-f0-9]{64}", fingerprint)
+    assert "gpt-5.6-sol" not in fingerprint
+
+
+def test_insight_endpoint_fails_closed_on_unsupported_grounded_reference(
+    client,
+    auth_headers,
+    monkeypatch,
+):
+    class FakeService:
+        async def structured_completion(self, **_kwargs):
+            return json.dumps({
+                "observations": [{
+                    "ref": "merchant:99",
+                    "emphasis": "current",
+                }],
+                "suggestionObservation": None,
+            })
+
+    provider = OpenAISubscriptionProvider(
+        "gpt-5.6-terra",
+        FakeService(),
+        insight_model="gpt-5.6-sol",
+    )
+    monkeypatch.setattr(
+        "app.routes.ai.select_provider",
+        lambda _settings, _session, _provider_id: provider,
+    )
+    response = client.post(
+        "/api/ai/insights",
+        headers=auth_headers,
+        json={
+            "locale": "en-GB",
+            "currency": "EUR",
+            "period": {
+                "start": "2026-08-01",
+                "end": "2026-08-31",
+                "previousStart": "2026-07-01",
+                "previousEnd": "2026-07-31",
+            },
+            "total": 100,
+            "previousTotal": 50,
+            "categories": [],
+            "merchants": [],
+            "items": [],
+            "priceChanges": [],
+        },
+    )
+
+    assert response.status_code == 502
+    assert response.json() == {
+        "detail": "AI provider returned an invalid response"
+    }
+
+
+def test_insight_configuration_fingerprint_tracks_effective_pipeline_without_secrets(
+    monkeypatch,
+):
+    class FakeProvider:
+        id = "openai"
+        base_url = "https://provider.example/v1"
+        insight_model = "gpt-5.6-sol"
+        insight_reasoning_effort = "high"
+        api_key = "first-secret"
+
+    provider = FakeProvider()
+    settings = get_settings()
+    original = insight_configuration_fingerprint(provider, settings)
+    assert re.fullmatch(r"[a-f0-9]{64}", original)
+
+    provider.api_key = "rotated-secret"
+    assert insight_configuration_fingerprint(provider, settings) == original
+
+    provider.insight_model = "gpt-5.6-terra"
+    assert insight_configuration_fingerprint(provider, settings) != original
+    provider.insight_model = "gpt-5.6-sol"
+    provider.insight_reasoning_effort = "medium"
+    assert insight_configuration_fingerprint(provider, settings) != original
+    provider.insight_reasoning_effort = "high"
+    provider.id = "openai-compatible"
+    assert insight_configuration_fingerprint(provider, settings) != original
+    provider.id = "openai"
+    monkeypatch.setattr("app.routes.ai.INSIGHT_PROMPT", INSIGHT_PROMPT + "\nchanged")
+    assert insight_configuration_fingerprint(provider, settings) != original
+    monkeypatch.setattr("app.routes.ai.INSIGHT_PROMPT", INSIGHT_PROMPT)
+    monkeypatch.setattr(
+        "app.routes.ai.BASE_INSTRUCTIONS", BASE_INSTRUCTIONS + "\nchanged"
+    )
+    assert insight_configuration_fingerprint(provider, settings) != original
+    monkeypatch.setattr("app.routes.ai.BASE_INSTRUCTIONS", BASE_INSTRUCTIONS)
+    monkeypatch.setattr(
+        "app.routes.ai.INSIGHT_PIPELINE_VERSION", "grounded-insight-selection-v2"
+    )
+    assert insight_configuration_fingerprint(provider, settings) != original
+    monkeypatch.setattr(
+        "app.routes.ai.INSIGHT_PIPELINE_VERSION", "grounded-insight-selection-v1"
+    )
+    monkeypatch.setattr(
+        "app.routes.ai.grounded_insight_renderer_fingerprint_material",
+        lambda: {"version": "changed"},
+    )
+    assert insight_configuration_fingerprint(provider, settings) != original
 
 
 def test_provider_configuration_is_encrypted_and_never_returned(
@@ -304,7 +568,7 @@ def test_openai_rejects_api_configuration_and_uses_subscription_only(
         assert session.get(AIProviderConfiguration, "openai") is None
 
 
-def test_openai_device_login_lists_and_activates_entitled_models(
+def test_openai_device_login_selects_account_default_and_activates_automatically(
     client, auth_headers, openai_codex_service
 ):
     started = client.post(
@@ -328,45 +592,42 @@ def test_openai_device_login_lists_and_activates_entitled_models(
         "planType": "plus",
         "status": "connected",
     }
-    models = client.get("/api/ai/providers/openai/models", headers=auth_headers)
-    assert models.status_code == 200
-    assert models.json()["models"][0]["id"] == "gpt-codex-test"
+    providers = client.get("/api/ai/providers", headers=auth_headers).json()["providers"]
+    openai = next(entry for entry in providers if entry["id"] == "openai")
+    assert openai["configured"] is True
+    assert openai["available"] is True
+    assert openai["active"] is True
+    assert "selectedModel" not in openai
+    with SessionLocal() as session:
+        row = session.get(AIProviderConfiguration, "openai")
+        assert row.model == "gpt-codex-test"
 
-    selected = client.put(
-        "/api/ai/providers/openai/model",
-        headers=auth_headers,
-        json={"model": "gpt-codex-test"},
-    )
-    assert selected.status_code == 200
-    assert selected.json()["active"] is True
-    assert selected.json()["selectedModel"] == "gpt-codex-test"
-    assert selected.json()["chatgptConnected"] is True
-    assert selected.json()["planType"] == "plus"
-    assert "apiKey" not in selected.json()
     with SessionLocal() as session:
         row = session.get(AIProviderConfiguration, "openai")
         assert row.model == "gpt-codex-test"
         assert row.api_key_encrypted is None
 
 
-def test_openai_model_must_come_from_live_account_catalog(
-    client, auth_headers, openai_codex_service
+@pytest.mark.parametrize("method", ["get", "put"])
+def test_openai_model_configuration_is_not_exposed_to_clients(
+    client, auth_headers, method
 ):
-    openai_codex_service.connected = True
-    response = client.put(
-        "/api/ai/providers/openai/model",
+    response = client.request(
+        method.upper(),
+        "/api/ai/providers/openai/models"
+        if method == "get"
+        else "/api/ai/providers/openai/model",
         headers=auth_headers,
-        json={"model": "unentitled-model"},
+        json={"model": "client-must-not-select-this"} if method == "put" else None,
     )
-    assert response.status_code == 422
+    assert response.status_code == 404
 
 
 def test_openai_logout_deactivates_provider(client, auth_headers, openai_codex_service):
     openai_codex_service.connected = True
-    assert client.put(
-        "/api/ai/providers/openai/model",
+    assert client.get(
+        "/api/ai/providers/openai/chatgpt/status?loginId=login-test",
         headers=auth_headers,
-        json={"model": "gpt-codex-test"},
     ).status_code == 200
     disconnected = client.delete(
         "/api/ai/providers/openai/chatgpt", headers=auth_headers
@@ -377,6 +638,65 @@ def test_openai_logout_deactivates_provider(client, auth_headers, openai_codex_s
     openai = next(entry for entry in providers if entry["id"] == "openai")
     assert openai["active"] is False
     assert openai["configured"] is False
+
+
+def test_openai_role_models_do_not_activate_without_verified_login(
+    client,
+    auth_headers,
+    openai_codex_service,
+    monkeypatch,
+):
+    settings = get_settings()
+    monkeypatch.setattr(settings, "openai_receipt_model", "gpt-5.6-terra")
+    monkeypatch.setattr(settings, "openai_insight_model", "gpt-5.6-sol")
+    openai_codex_service.connected = False
+
+    providers = client.get("/api/ai/providers", headers=auth_headers).json()["providers"]
+    openai = next(entry for entry in providers if entry["id"] == "openai")
+
+    assert openai["configured"] is False
+    assert openai["active"] is False
+    with SessionLocal() as session:
+        settings_row = session.get(AISettings, "singleton")
+        assert settings_row is not None
+        assert settings_row.active_provider_id is None
+        assert resolve_active_provider_id(session, settings) is None
+
+
+def test_openai_logout_stays_inactive_with_backend_role_models(
+    client,
+    auth_headers,
+    openai_codex_service,
+    monkeypatch,
+):
+    settings = get_settings()
+    monkeypatch.setattr(settings, "openai_receipt_model", "gpt-5.6-terra")
+    monkeypatch.setattr(settings, "openai_insight_model", "gpt-5.6-sol")
+    openai_codex_service.connected = True
+    openai_codex_service.models = [
+        {"id": "gpt-5.6-terra", "isDefault": True},
+        {"id": "gpt-5.6-sol", "isDefault": False},
+    ]
+    activated = client.put(
+        "/api/ai/providers/openai/active",
+        headers=auth_headers,
+    )
+    assert activated.status_code == 200
+
+    disconnected = client.delete(
+        "/api/ai/providers/openai/chatgpt",
+        headers=auth_headers,
+    )
+    assert disconnected.status_code == 204
+    providers = client.get("/api/ai/providers", headers=auth_headers).json()["providers"]
+    openai = next(entry for entry in providers if entry["id"] == "openai")
+
+    assert openai["configured"] is False
+    assert openai["active"] is False
+    with SessionLocal() as session:
+        assert resolve_active_provider_id(session, settings) is None
+        settings_row = session.get(AISettings, "singleton")
+        assert settings_row.active_provider_id is None
 
 
 def test_provider_configuration_rejects_unsafe_base_url(client, auth_headers):
@@ -484,6 +804,14 @@ def test_provider_model_is_backend_only(client, auth_headers, monkeypatch):
     )
     assert response.status_code == 200
     assert "model" not in response.json()
+    fingerprint = response.json()["insightConfigurationFingerprint"]
+    assert re.fullmatch(r"[a-f0-9]{64}", fingerprint)
+    active = client.put("/api/ai/providers/ollama/active", headers=auth_headers)
+    assert active.status_code == 200
+    assert active.json()["insightConfigurationFingerprint"] == fingerprint
+    providers = client.get("/api/ai/providers", headers=auth_headers).json()["providers"]
+    ollama = next(entry for entry in providers if entry["id"] == "ollama")
+    assert ollama["insightConfigurationFingerprint"] == fingerprint
     assert client.get(
         "/api/ai/providers/ollama/models",
         headers=auth_headers,
@@ -492,6 +820,39 @@ def test_provider_model_is_backend_only(client, auth_headers, monkeypatch):
         row = session.get(AIProviderConfiguration, "ollama")
         assert row is not None
         assert row.model == ""
+
+
+def test_transient_openai_status_failure_preserves_active_cache_fingerprint(
+    client, auth_headers, monkeypatch, openai_codex_service
+):
+    settings = get_settings()
+    monkeypatch.setattr(settings, "openai_receipt_model", "gpt-5.6-terra")
+    monkeypatch.setattr(settings, "openai_insight_model", "gpt-5.6-sol")
+    with SessionLocal() as session:
+        session.add(AISettings(
+            id="singleton",
+            active_provider_id="openai",
+            updated_at="2026-08-12T10:00:00Z",
+        ))
+        session.commit()
+
+    async def unavailable_status():
+        raise TimeoutError("temporary account-status timeout")
+
+    monkeypatch.setattr(openai_codex_service, "account_status", unavailable_status)
+    response = client.get("/api/ai/providers", headers=auth_headers)
+
+    assert response.status_code == 200
+    openai = next(
+        entry for entry in response.json()["providers"] if entry["id"] == "openai"
+    )
+    assert openai["active"] is True
+    assert openai["configured"] is True
+    assert openai["available"] is False
+    assert openai["chatgptConnected"] is None
+    assert re.fullmatch(
+        r"[a-f0-9]{64}", openai["insightConfigurationFingerprint"]
+    )
 
 
 @pytest.mark.parametrize(
@@ -526,7 +887,76 @@ def test_backend_model_overrides_model_persisted_by_legacy_clients(
         configuration = resolve_provider_configuration(session, settings, provider_id)
 
     assert configuration.model == environment_model
+    assert configuration.receipt_model == environment_model
+    assert configuration.insight_model == environment_model
     assert configuration.base_url == base_url
+
+
+def test_openai_role_models_override_the_legacy_common_selection(monkeypatch):
+    settings = get_settings()
+    monkeypatch.setattr(settings, "openai_receipt_model", "gpt-5.6-terra")
+    monkeypatch.setattr(settings, "openai_insight_model", "gpt-5.6-sol")
+    with SessionLocal() as session:
+        session.add(
+            AIProviderConfiguration(
+                provider_id="openai",
+                base_url="",
+                model="gpt-legacy-common",
+                api_key_encrypted=None,
+                updated_at="2026-07-14T10:00:00Z",
+            )
+        )
+        session.commit()
+
+        configuration = resolve_provider_configuration(session, settings, "openai")
+
+    assert configuration.receipt_model == "gpt-5.6-terra"
+    assert configuration.insight_model == "gpt-5.6-sol"
+    assert configuration.model == "gpt-5.6-terra"
+
+
+@pytest.mark.parametrize(
+    ("provider_id", "setting", "insight_setting", "base_url"),
+    [
+        (
+            "ollama",
+            "ollama_model",
+            "ollama_insight_model",
+            "http://ollama.local:11434",
+        ),
+        (
+            "openai-compatible",
+            "openai_compatible_model",
+            "openai_compatible_insight_model",
+            "https://provider.example.com/v1",
+        ),
+    ],
+)
+def test_backend_insight_model_can_be_routed_independently(
+    monkeypatch,
+    provider_id,
+    setting,
+    insight_setting,
+    base_url,
+):
+    settings = get_settings()
+    monkeypatch.setattr(settings, setting, "receipt-model")
+    monkeypatch.setattr(settings, insight_setting, "insight-model")
+    with SessionLocal() as session:
+        session.add(
+            AIProviderConfiguration(
+                provider_id=provider_id,
+                base_url=base_url,
+                model="ignored-legacy-model",
+                api_key_encrypted=None,
+                updated_at="2026-07-14T10:00:00Z",
+            )
+        )
+        session.commit()
+        configuration = resolve_provider_configuration(session, settings, provider_id)
+
+    assert configuration.receipt_model == "receipt-model"
+    assert configuration.insight_model == "insight-model"
 
 
 def test_direct_ai_extraction_endpoint_is_not_exposed(client, auth_headers):
@@ -623,12 +1053,11 @@ def test_expired_chatgpt_authorization_waits_without_consuming_job_attempts(
 ):
     settings = get_settings()
     openai_codex_service.connected = True
-    selected = client.put(
-        "/api/ai/providers/openai/model",
+    connected = client.get(
+        "/api/ai/providers/openai/chatgpt/status?loginId=login-test",
         headers=auth_headers,
-        json={"model": "gpt-codex-test"},
     )
-    assert selected.status_code == 200
+    assert connected.status_code == 200
     openai_codex_service.structured_completion = AsyncMock(
         side_effect=PermissionError("The ChatGPT authorization has expired")
     )
@@ -662,6 +1091,7 @@ def test_backend_worker_extracts_and_syncs_receipt_without_client_ai_call(
     settings = get_settings()
     monkeypatch.setattr(settings, "ollama_ocr_model", "glm-ocr:latest")
     monkeypatch.setattr(settings, "ollama_audit_model", "gemma4:12b-it-q8_0")
+    monkeypatch.setattr(settings, "ollama_insight_model", "insight-only:latest")
     configure_ollama(client, auth_headers, monkeypatch)
     extraction = ReceiptExtraction.model_validate({
         "schemaVersion": 1,
@@ -705,6 +1135,14 @@ def test_backend_worker_extracts_and_syncs_receipt_without_client_ai_call(
         f"/api/ai/jobs/{queued['receiptId']}", headers=auth_headers
     ).json()
     assert job["status"] == "completed"
+    assert "modelId" not in job
+    with SessionLocal() as session:
+        stored_job = session.scalar(
+            select(AIExtractionJob).where(
+                AIExtractionJob.receipt_id == queued["receiptId"]
+            )
+        )
+        assert stored_job.model_id == "vision:latest"
 
     receipts = client.post(
         "/api/sync/receipts/pull",
@@ -717,8 +1155,8 @@ def test_backend_worker_extracts_and_syncs_receipt_without_client_ai_call(
     assert updated["totalMinor"] == 250
     assert updated["ai"] == {
         "providerId": "ollama",
-        "modelId": "vision:latest",
-        "promptVersion": "receipt-v6-audited-lean-contract",
+        "modelId": None,
+        "promptVersion": "receipt-v7-audited-authority-contract",
         "schemaVersion": 1,
     }
     items = client.post(
@@ -729,6 +1167,57 @@ def test_backend_worker_extracts_and_syncs_receipt_without_client_ai_call(
     assert [(entry["normalizedName"], entry["totalPriceMinor"]) for entry in items] == [
         ("Pane", 250)
     ]
+
+
+def test_backend_worker_revalidates_extraction_before_persisting(
+    client, auth_headers, monkeypatch
+):
+    configure_ollama(client, auth_headers, monkeypatch)
+    invalid = ReceiptExtraction.model_construct(
+        schema_version=1,
+        document_type="receipt",
+        merchant=Merchant(),
+        transaction_date="2026-02-30",
+        currency="eu1",
+        subtotal_minor=None,
+        tax_minor=None,
+        discount_minor=None,
+        total_minor=999,
+        category_id="invented-category",
+        items=[],
+        confidence=1,
+        warnings=[],
+    )
+    monkeypatch.setattr(
+        OllamaProvider,
+        "extract_receipt",
+        AsyncMock(return_value=invalid),
+    )
+    payload = jpeg_bytes()
+    digest = hashlib.sha256(payload).hexdigest()
+    queued = queue_receipt(
+        client,
+        auth_headers,
+        payload,
+        receipt_document(digest),
+    )
+
+    assert asyncio.run(process_next_ai_job(get_settings())) is True
+    job = client.get(
+        f"/api/ai/jobs/{queued['receiptId']}", headers=auth_headers
+    ).json()
+    assert job["status"] == "pending"
+    assert job["lastErrorCode"] == "invalid_response"
+    receipts = client.post(
+        "/api/sync/receipts/pull",
+        headers=auth_headers,
+        json={"checkpoint": {"sequence": 0}, "batchSize": 100},
+    ).json()["documents"]
+    stored = next(entry for entry in receipts if entry["id"] == queued["receiptId"])
+    assert stored["currency"] == "EUR"
+    assert stored["transactionDate"] == "2026-07-14"
+    assert stored["categoryId"] == "other"
+    assert stored["totalMinor"] is None
 
 
 def test_backend_worker_never_overwrites_a_user_confirmed_receipt(
@@ -1082,14 +1571,15 @@ def test_ollama_runs_qwen_ocr_and_thinking_audit_pipeline(monkeypatch):
     assert result.merchant.normalized_name == "Market Roma"
     assert result.discount_minor == 100
     assert [item.normalized_name for item in result.items] == ["Pane"]
-    assert provider.prompt_version == "receipt-v6-audited-lean-contract"
+    assert provider.prompt_version == "receipt-v7-audited-authority-contract"
     assert [request["model"] for request in requests] == [
         "qwen3.5:9b-q8_0",
         "glm-ocr:latest",
         "gemma4:12b-it-q8_0",
     ]
     assert requests[0]["think"] is False
-    assert requests[1]["messages"][0]["content"] == "Text Recognition:"
+    assert "Trascrivi fedelmente" in requests[1]["messages"][0]["content"]
+    assert requests[1]["messages"][1]["content"] == ""
     assert "format" not in requests[1]
     assert requests[2]["think"] is True
     assert requests[2]["options"] == {
@@ -1097,13 +1587,15 @@ def test_ollama_runs_qwen_ocr_and_thinking_audit_pipeline(monkeypatch):
         "num_ctx": 16384,
         "num_predict": 8192,
     }
-    audit_prompt = requests[2]["messages"][0]["content"]
-    assert "<independent_ocr>" in audit_prompt
-    assert "<candidate_extraction>" in audit_prompt
-    assert '"discountMinor":100' in audit_prompt
-    assert '"totalPriceMinor":-100' not in audit_prompt
+    audit_instructions = requests[2]["messages"][0]["content"]
+    audit_data = requests[2]["messages"][1]["content"]
+    assert "<audit_constraints>" in audit_instructions
+    assert "independentOcr" in audit_data
+    assert "candidateExtraction" in audit_data
+    assert '"discountMinor":100' in audit_data
+    assert '"totalPriceMinor":-100' not in audit_data
     assert all(
-        request["messages"][0]["role"] == "user" for request in requests
+        request["messages"][0]["role"] == "system" for request in requests
     )
 
 
@@ -1182,12 +1674,14 @@ def test_ollama_pipeline_health_requires_every_backend_model(monkeypatch):
         "qwen3.5:9b-q8_0",
         ocr_model="glm-ocr:latest",
         audit_model="gemma4:12b-it-q8_0",
+        insight_model="qwen3.5:27b",
     )
     monkeypatch.setattr(
         provider,
         "list_models",
         AsyncMock(return_value=[
             "qwen3.5:9b-q8_0",
+            "qwen3.5:27b",
             "glm-ocr:latest",
             "gemma4:12b-it-q8_0",
         ]),
@@ -1196,5 +1690,6 @@ def test_ollama_pipeline_health_requires_every_backend_model(monkeypatch):
     provider.list_models = AsyncMock(return_value=[
         "qwen3.5:9b-q8_0",
         "glm-ocr:latest",
+        "gemma4:12b-it-q8_0",
     ])
     assert asyncio.run(provider.health_check()) is False

@@ -6,10 +6,11 @@ from urllib.parse import parse_qs
 
 import httpx
 
-from app.config import get_settings
+from app.config import Settings, get_settings
 from app.providers.openai_subscription import OpenAISubscriptionProvider
 from app.schemas.ai import ExtractionContext, InsightSnapshot
 from app.services.openai_codex import (
+    BASE_INSTRUCTIONS,
     CODEX_RESPONSES_URL,
     OPENAI_DEVICE_CODE_URL,
     OPENAI_DEVICE_TOKEN_URL,
@@ -254,7 +255,8 @@ def test_structured_completion_disables_tools_and_parses_sse(tmp_path):
         )
         output = await service.structured_completion(
             model="gpt-5.6-terra",
-            prompt="Extract the receipt",
+            instructions="Extract the receipt",
+            user_input="",
             output_schema={
                 "type": "object",
                 "properties": {"ok": {"type": "boolean", "default": False}},
@@ -265,6 +267,9 @@ def test_structured_completion_disables_tools_and_parses_sse(tmp_path):
         )
         assert output == '{"ok":true}'
         assert captured["tools"] == []
+        assert captured["instructions"] == (
+            f"{BASE_INSTRUCTIONS}\n\nExtract the receipt"
+        )
         assert "tool_choice" not in captured
         assert "parallel_tool_calls" not in captured
         assert captured["reasoning"] == {
@@ -277,7 +282,8 @@ def test_structured_completion_disables_tools_and_parses_sse(tmp_path):
         schema = captured["text"]["format"]["schema"]
         assert schema["required"] == ["ok"]
         assert schema["additionalProperties"] is False
-        image = captured["input"][0]["content"][1]
+        assert len(captured["input"][0]["content"]) == 1
+        image = captured["input"][0]["content"][0]
         assert image["image_url"] == "data:image/webp;base64,aW1hZ2U="
         assert image["detail"] == "original"
         await service.close()
@@ -285,7 +291,7 @@ def test_structured_completion_disables_tools_and_parses_sse(tmp_path):
     asyncio.run(scenario())
 
 
-def test_subscription_provider_applies_backend_reasoning_effort_to_both_tasks():
+def test_subscription_provider_routes_models_and_reasoning_by_task():
     calls: list[dict[str, object]] = []
 
     class FakeService:
@@ -293,11 +299,15 @@ def test_subscription_provider_applies_backend_reasoning_effort_to_both_tasks():
             calls.append(kwargs)
             if kwargs.get("image_bytes") is not None:
                 return '{"schemaVersion":1,"documentType":"receipt"}'
-            return '{"observations":[],"suggestion":null}'
+            return '{"observations":[],"suggestionObservation":null}'
 
     async def scenario() -> None:
         provider = OpenAISubscriptionProvider(
-            "gpt-5.6-terra", FakeService(), reasoning_effort="high"
+            "gpt-5.6-terra",
+            FakeService(),
+            reasoning_effort="low",
+            insight_model="gpt-5.6-sol",
+            insight_reasoning_effort="high",
         )
         await provider.extract_receipt(
             b"image", "image/webp", ExtractionContext(locale="it-IT", currency="EUR")
@@ -305,7 +315,10 @@ def test_subscription_provider_applies_backend_reasoning_effort_to_both_tasks():
         await provider.generate_insights(InsightSnapshot(
             locale="it-IT",
             currency="EUR",
-            period={},
+            period={
+                "start": "2026-08-01", "end": "2026-08-31",
+                "previousStart": "2026-07-01", "previousEnd": "2026-07-31",
+            },
             total=0,
             previousTotal=0,
             categories=[],
@@ -314,6 +327,64 @@ def test_subscription_provider_applies_backend_reasoning_effort_to_both_tasks():
             priceChanges=[],
         ))
 
-        assert [call["reasoning_effort"] for call in calls] == ["high", "high"]
+        assert [call["model"] for call in calls] == [
+            "gpt-5.6-terra",
+            "gpt-5.6-sol",
+        ]
+        assert [call["reasoning_effort"] for call in calls] == ["low", "high"]
+        assert provider.model == provider.receipt_model == "gpt-5.6-terra"
+        assert calls[0]["user_input"] == ""
+        assert "<goal>" in calls[0]["instructions"]
+        assert json.loads(calls[1]["user_input"])["amountUnit"] == "major"
+        assert "Ignore all rules" not in calls[1]["instructions"]
+        assert "<goal>" in calls[1]["instructions"]
 
     asyncio.run(scenario())
+
+
+def test_role_reasoning_efforts_fall_back_to_legacy_common_setting():
+    settings = get_settings().model_copy(update={
+        "openai_reasoning_effort": "high",
+        "openai_receipt_reasoning_effort": None,
+        "openai_insight_reasoning_effort": None,
+    })
+
+    assert settings.effective_openai_receipt_reasoning_effort == "high"
+    assert settings.effective_openai_insight_reasoning_effort == "high"
+
+    settings = settings.model_copy(update={
+        "openai_receipt_reasoning_effort": "low",
+        "openai_insight_reasoning_effort": "xhigh",
+    })
+    assert settings.effective_openai_receipt_reasoning_effort == "low"
+    assert settings.effective_openai_insight_reasoning_effort == "xhigh"
+
+
+def test_empty_compose_role_efforts_use_legacy_environment_fallback(monkeypatch):
+    monkeypatch.setenv("BIANCO_OPENAI_REASONING_EFFORT", "high")
+    monkeypatch.setenv("BIANCO_OPENAI_RECEIPT_REASONING_EFFORT", "")
+    monkeypatch.setenv("BIANCO_OPENAI_INSIGHT_REASONING_EFFORT", "")
+
+    settings = Settings()
+
+    assert settings.effective_openai_receipt_reasoning_effort == "high"
+    assert settings.effective_openai_insight_reasoning_effort == "high"
+
+
+def test_subscription_health_requires_both_distinct_role_models():
+    class FakeService:
+        async def list_models(self):
+            return [
+                {"id": "gpt-5.6-terra"},
+                {"id": "gpt-5.6-sol"},
+            ]
+
+    provider = OpenAISubscriptionProvider(
+        "gpt-5.6-terra",
+        FakeService(),
+        insight_model="gpt-5.6-sol",
+    )
+    assert asyncio.run(provider.health_check()) is True
+
+    provider.insight_model = "gpt-not-entitled"
+    assert asyncio.run(provider.health_check()) is False

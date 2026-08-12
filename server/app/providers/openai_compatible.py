@@ -7,13 +7,16 @@ from app.providers.common import (
     build_receipt_prompt,
     parse_json_content,
     strict_schema_for,
+    trusted_instructions,
 )
 from app.schemas.ai import (
     ExtractionContext,
     GeneratedInsights,
+    GroundedInsightSelection,
     InsightSnapshot,
     ReceiptExtraction,
 )
+from app.services.grounded_insights import render_grounded_insights
 
 
 class OpenAICompatibleProvider:
@@ -26,18 +29,26 @@ class OpenAICompatibleProvider:
         provider_id: str = "openai-compatible",
         label: str = "Altro / OpenAI-compatible",
         requires_api_key: bool = False,
+        insight_model: str = "",
     ) -> None:
         self.id = provider_id
         self.label = label
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
-        self.model = model
+        self.receipt_model = model
+        self.insight_model = insight_model or model
+        self.model = self.receipt_model
         self.requires_api_key = requires_api_key
 
     @property
     def configured(self) -> bool:
         credentials_ready = bool(self.api_key) or not self.requires_api_key
-        return bool(self.base_url and self.model and credentials_ready)
+        return bool(
+            self.base_url
+            and self.receipt_model
+            and self.insight_model
+            and credentials_ready
+        )
 
     def _headers(self) -> dict[str, str]:
         return {"Authorization": f"Bearer {self.api_key}"} if self.api_key else {}
@@ -62,13 +73,17 @@ class OpenAICompatibleProvider:
             return False
         try:
             models = await self.list_models()
-            return self.model in models
+            available = set(models)
+            return {
+                self.receipt_model,
+                self.insight_model,
+            }.issubset(available)
         except httpx.HTTPError:
             return False
 
-    async def _complete(self, messages: list[dict], output_model):
+    async def _complete(self, messages: list[dict], output_model, *, model: str):
         payload = {
-            "model": self.model,
+            "model": model,
             "messages": messages,
             "temperature": 0,
             "response_format": {
@@ -94,16 +109,12 @@ class OpenAICompatibleProvider:
         self, image_bytes: bytes, mime_type: str, context: ExtractionContext
     ) -> ReceiptExtraction:
         image = base64.b64encode(image_bytes).decode("ascii")
+        prompt = build_receipt_prompt(context.locale, context.currency)
         messages = [
+            {"role": "system", "content": trusted_instructions(prompt)},
             {
                 "role": "user",
                 "content": [
-                    {
-                        "type": "text",
-                        "text": build_receipt_prompt(
-                            context.locale, context.currency
-                        ),
-                    },
                     {
                         "type": "image_url",
                         "image_url": {"url": f"data:{mime_type};base64,{image}"},
@@ -111,15 +122,26 @@ class OpenAICompatibleProvider:
                 ],
             }
         ]
-        return await self._complete(messages, ReceiptExtraction)
+        return await self._complete(
+            messages,
+            ReceiptExtraction,
+            model=self.receipt_model,
+        )
 
     async def generate_insights(
         self, snapshot: InsightSnapshot
     ) -> GeneratedInsights:
+        prompt = build_insight_prompt(snapshot)
         messages = [
+            {"role": "system", "content": trusted_instructions(prompt)},
             {
                 "role": "user",
-                "content": build_insight_prompt(snapshot),
+                "content": prompt.user_input,
             }
         ]
-        return await self._complete(messages, GeneratedInsights)
+        selection = await self._complete(
+            messages,
+            GroundedInsightSelection,
+            model=self.insight_model,
+        )
+        return render_grounded_insights(snapshot, selection)

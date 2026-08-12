@@ -23,9 +23,15 @@ class ProviderDefinition:
 class ResolvedProviderConfiguration:
     definition: ProviderDefinition
     base_url: str
-    model: str
+    receipt_model: str
+    insight_model: str
     api_key: str
     source: str
+
+    @property
+    def model(self) -> str:
+        """Backward-compatible alias for receipt extraction provenance."""
+        return self.receipt_model
 
 
 PROVIDER_DEFINITIONS = {
@@ -46,16 +52,30 @@ def _fernet(settings: Settings) -> Fernet:
     return Fernet(base64.urlsafe_b64encode(digest))
 
 
-def _environment_values(settings: Settings, provider_id: str) -> tuple[str, str, str]:
+def _environment_values(
+    settings: Settings, provider_id: str
+) -> tuple[str, str, str, str]:
     if provider_id == "openai":
         # OpenAI is deliberately subscription-only. API keys belong to the
         # separate OpenAI-compatible provider and are never used as a fallback.
-        return "", "", ""
+        return (
+            "",
+            settings.openai_receipt_model,
+            settings.openai_insight_model,
+            "",
+        )
     if provider_id == "ollama":
-        return settings.ollama_base_url, settings.ollama_model, ""
+        return (
+            settings.ollama_base_url,
+            settings.ollama_model,
+            settings.ollama_insight_model or settings.ollama_model,
+            "",
+        )
     return (
         settings.openai_compatible_base_url,
         settings.openai_compatible_model,
+        settings.openai_compatible_insight_model
+        or settings.openai_compatible_model,
         settings.openai_compatible_api_key,
     )
 
@@ -66,11 +86,18 @@ def resolve_provider_configuration(
     definition = PROVIDER_DEFINITIONS.get(provider_id)
     if definition is None:
         raise KeyError(provider_id)
-    base_url, model, api_key = _environment_values(settings, provider_id)
+    base_url, receipt_model, insight_model, api_key = _environment_values(
+        settings, provider_id
+    )
     row = session.get(AIProviderConfiguration, provider_id)
     if row is None:
         return ResolvedProviderConfiguration(
-            definition, base_url.rstrip("/"), model, api_key, "environment"
+            definition,
+            base_url.rstrip("/"),
+            receipt_model,
+            insight_model,
+            api_key,
+            "environment",
         )
     if row.api_key_encrypted and provider_id != "openai":
         try:
@@ -79,13 +106,16 @@ def resolve_provider_configuration(
             ).decode("utf-8")
         except (InvalidToken, UnicodeDecodeError) as error:
             raise ValueError(f"Cannot decrypt API key for {provider_id}") from error
+    if provider_id == "openai":
+        # A legacy selection is a common fallback only. Explicit per-role
+        # backend settings always win and can never be overwritten by a client.
+        receipt_model = receipt_model or row.model
+        insight_model = insight_model or row.model
     return ResolvedProviderConfiguration(
         definition,
         "" if provider_id == "openai" else row.base_url.rstrip("/"),
-        # Only the ChatGPT subscription stores a user-selected model. Ollama and
-        # OpenAI-compatible models are backend-only, so their environment value
-        # must also override rows written by older clients.
-        row.model if provider_id == "openai" else model,
+        receipt_model,
+        insight_model,
         "" if provider_id == "openai" else api_key,
         "database",
     )
@@ -102,10 +132,11 @@ def resolve_all_provider_configurations(
 
 def provider_is_configured(configuration: ResolvedProviderConfiguration) -> bool:
     if configuration.definition.id == "openai":
-        return bool(configuration.model)
+        return bool(configuration.receipt_model and configuration.insight_model)
     return bool(
         configuration.base_url
-        and configuration.model
+        and configuration.receipt_model
+        and configuration.insight_model
         and (
             not configuration.definition.requires_api_key
             or configuration.api_key
@@ -125,15 +156,19 @@ def _save_active_provider(session: Session, provider_id: str | None) -> None:
 
 def resolve_active_provider_id(session: Session, settings: Settings) -> str | None:
     row = session.get(AISettings, AI_SETTINGS_ID)
-    if row and row.active_provider_id in PROVIDER_DEFINITIONS:
-        configuration = resolve_provider_configuration(
-            session, settings, row.active_provider_id
-        )
-        if provider_is_configured(configuration):
-            return row.active_provider_id
+    if row is not None:
+        if row.active_provider_id in PROVIDER_DEFINITIONS:
+            configuration = resolve_provider_configuration(
+                session, settings, row.active_provider_id
+            )
+            if provider_is_configured(configuration):
+                return row.active_provider_id
+        # A persisted null is an explicit deactivation (for example after
+        # disconnecting ChatGPT), not an invitation to auto-select a provider.
+        return None
 
     candidates: list[str] = []
-    if settings.ai_provider != "none":
+    if settings.ai_provider not in {"none", "openai"}:
         configuration = resolve_provider_configuration(
             session, settings, settings.ai_provider
         )
@@ -143,11 +178,14 @@ def resolve_active_provider_id(session: Session, settings: Settings) -> str | No
         candidates = [
             configuration.definition.id
             for configuration in resolve_all_provider_configurations(session, settings)
-            if provider_is_configured(configuration)
+            # Model names alone cannot prove that a ChatGPT subscription is
+            # connected. OpenAI is activated only after an async OAuth status
+            # check in the route layer.
+            if configuration.definition.id != "openai"
+            and provider_is_configured(configuration)
         ]
     active = candidates[0] if len(candidates) == 1 else None
-    if active or row is None:
-        _save_active_provider(session, active)
+    _save_active_provider(session, active)
     return active
 
 

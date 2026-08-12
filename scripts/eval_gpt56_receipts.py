@@ -31,7 +31,8 @@ SERVER = ROOT / "server"
 if str(SERVER) not in sys.path:
     sys.path.insert(0, str(SERVER))
 
-FORMAT_VERSION = 2
+FORMAT_VERSION = 3
+SCORING_VERSION = "receipt-score-v3-null-penalty-global-match"
 MODELS = ("gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna")
 BASE_EFFORTS = ("low", "medium")
 HIGH_EFFORT = "high"
@@ -84,7 +85,6 @@ SUMMARY_METRICS = (
 )
 MODEL_QUALITY_ERROR_CATEGORIES = frozenset({
     "structured_output",
-    "provider_response",
 })
 
 
@@ -359,9 +359,9 @@ def normalized_text(value: str | None) -> str:
 def text_similarity(left: str | None, right: str | None) -> float:
     a, b = normalized_text(left), normalized_text(right)
     if not a or not b:
-        return float(a == b)
-    if a in b or b in a:
-        return 1.0
+        # Missing names carry no matching evidence. In particular, two default
+        # empty normalized names must not make unrelated item rows a perfect pair.
+        return 0.0
     return SequenceMatcher(None, a, b).ratio()
 
 
@@ -386,34 +386,78 @@ def item_name_similarity(expected: Any, actual: Any) -> float:
 
 
 def match_items(expected_items: list[Any], actual_items: list[Any]) -> list[tuple[int, int]]:
-    """Greedily match lines using names only; scored amounts never affect pairing."""
+    """Globally match lines by names only; scored amounts never affect pairing.
 
-    candidates = [
-        (item_name_similarity(expected, actual), expected_index, actual_index)
-        for expected_index, expected in enumerate(expected_items)
-        for actual_index, actual in enumerate(actual_items)
+    This is the O(n^3) Hungarian algorithm over a square, zero-padded matrix.
+    Similarities below the acceptance threshold have zero weight, so they cannot
+    consume a line that belongs to a stronger admissible match.
+    """
+
+    size = max(len(expected_items), len(actual_items))
+    if not size:
+        return []
+    weights = [[0.0] * size for _ in range(size)]
+    for expected_index, expected in enumerate(expected_items):
+        for actual_index, actual in enumerate(actual_items):
+            similarity = item_name_similarity(expected, actual)
+            if similarity >= 0.45:
+                weights[expected_index][actual_index] = similarity
+
+    # Potentials-based Hungarian algorithm for minimum cost assignment. Negating
+    # the name similarity turns maximum-weight matching into minimization.
+    row_potential = [0.0] * (size + 1)
+    column_potential = [0.0] * (size + 1)
+    matched_row = [0] * (size + 1)
+    predecessor = [0] * (size + 1)
+    for row in range(1, size + 1):
+        matched_row[0] = row
+        minimum = [float("inf")] * (size + 1)
+        used = [False] * (size + 1)
+        column = 0
+        while True:
+            used[column] = True
+            current_row = matched_row[column]
+            delta = float("inf")
+            next_column = 0
+            for candidate_column in range(1, size + 1):
+                if used[candidate_column]:
+                    continue
+                reduced_cost = (
+                    -weights[current_row - 1][candidate_column - 1]
+                    - row_potential[current_row]
+                    - column_potential[candidate_column]
+                )
+                if reduced_cost < minimum[candidate_column]:
+                    minimum[candidate_column] = reduced_cost
+                    predecessor[candidate_column] = column
+                if minimum[candidate_column] < delta:
+                    delta = minimum[candidate_column]
+                    next_column = candidate_column
+            for candidate_column in range(size + 1):
+                if used[candidate_column]:
+                    row_potential[matched_row[candidate_column]] += delta
+                    column_potential[candidate_column] -= delta
+                else:
+                    minimum[candidate_column] -= delta
+            column = next_column
+            if matched_row[column] == 0:
+                break
+        while True:
+            previous_column = predecessor[column]
+            matched_row[column] = matched_row[previous_column]
+            column = previous_column
+            if column == 0:
+                break
+
+    assigned_column = [0] * (size + 1)
+    for column in range(1, size + 1):
+        assigned_column[matched_row[column]] = column
+    return [
+        (row - 1, assigned_column[row] - 1)
+        for row in range(1, len(expected_items) + 1)
+        if assigned_column[row] <= len(actual_items)
+        and weights[row - 1][assigned_column[row] - 1] > 0.0
     ]
-    candidates.sort(
-        key=lambda candidate: (
-            candidate[0],
-            -abs(candidate[1] - candidate[2]),
-            -candidate[1],
-            -candidate[2],
-        ),
-        reverse=True,
-    )
-    matches: list[tuple[int, int]] = []
-    used_expected: set[int] = set()
-    used_actual: set[int] = set()
-    for similarity, expected_index, actual_index in candidates:
-        if similarity < 0.45:
-            continue
-        if expected_index in used_expected or actual_index in used_actual:
-            continue
-        matches.append((expected_index, actual_index))
-        used_expected.add(expected_index)
-        used_actual.add(actual_index)
-    return matches
 
 
 def ratio(correct: int | float, total: int) -> float:
@@ -421,7 +465,9 @@ def ratio(correct: int | float, total: int) -> float:
 
 
 def _optional_exact(expected: Any, actual: Any) -> float | None:
-    return None if expected is None else float(expected == actual)
+    # A labelled absence is evidence too: inventing an unreadable/unprinted
+    # field must be penalized, while returning null earns the exact match.
+    return float(expected == actual)
 
 
 def _weighted_quality(metrics: dict[str, float | None]) -> float:
@@ -481,21 +527,17 @@ def score(expected: Any, actual: Any) -> dict[str, float | None]:
         item_categories = None
 
     def exact_item_metric(field: str) -> float | None:
-        applicable = [
-            index for index, item in enumerate(expected.items)
-            if getattr(item, field) is not None
-        ]
-        if not applicable:
+        if not expected.items:
             return None
         correct = 0
-        for expected_index in applicable:
+        for expected_index, expected_item in enumerate(expected.items):
             actual_index = match_by_expected.get(expected_index)
             if actual_index is not None:
                 correct += int(
-                    getattr(expected.items[expected_index], field)
+                    getattr(expected_item, field)
                     == getattr(actual.items[actual_index], field)
                 )
-        return ratio(correct, len(applicable))
+        return ratio(correct, len(expected.items))
 
     metrics: dict[str, float | None] = {
         "schemaValidity": 1.0,
@@ -523,10 +565,10 @@ def failure_metrics(expected: Any, *, counts_against_quality: bool) -> dict[str,
             "quality": None,
         }
 
-    header_values = {
-        metric_name: (0.0 if getattr(expected, field_name) is not None else None)
-        for field_name, metric_name in HEADER_METRICS
-    }
+    # A structured-output failure produced no usable prediction. Every header
+    # field and every field of a labelled item therefore receives an effective
+    # zero, including labels whose correct value was null.
+    header_values = {metric_name: 0.0 for _field_name, metric_name in HEADER_METRICS}
     has_items = bool(expected.items)
     metrics: dict[str, float | None] = {
         "schemaValidity": 0.0,
@@ -536,19 +578,13 @@ def failure_metrics(expected: Any, *, counts_against_quality: bool) -> dict[str,
         else None,
         "headerExact": 0.0,
         **header_values,
-        "totalExact": 0.0 if expected.total_minor is not None else None,
+        "totalExact": 0.0,
         "itemRecall": 0.0,
         "itemPrecision": 0.0,
         "itemNameSimilarity": 0.0 if has_items else None,
-        "itemPriceExact": 0.0
-        if any(item.total_price_minor is not None for item in expected.items)
-        else None,
-        "itemUnitPriceExact": 0.0
-        if any(item.unit_price_minor is not None for item in expected.items)
-        else None,
-        "itemQuantityExact": 0.0
-        if any(item.quantity is not None for item in expected.items)
-        else None,
+        "itemPriceExact": 0.0 if has_items else None,
+        "itemUnitPriceExact": 0.0 if has_items else None,
+        "itemQuantityExact": 0.0 if has_items else None,
         "itemCategoryExact": 0.0 if has_items else None,
     }
     metrics["quality"] = 0.0
@@ -764,6 +800,7 @@ def load_resume_results(
     if (
         not isinstance(value, dict)
         or value.get("formatVersion") != FORMAT_VERSION
+        or value.get("scoringVersion") != SCORING_VERSION
         or value.get("evaluationFingerprint") != evaluation_fingerprint
         or not isinstance(value.get("results"), list)
     ):
@@ -775,11 +812,15 @@ def load_resume_results(
         if not isinstance(row, dict):
             raise EvalPreflightError("existing eval output contains an invalid result")
         key = _result_key(row)
+        status = row.get("status")
+        actual = row.get("actual")
         if (
             not all(key)
             or row.get("model") not in MODELS
             or row.get("reasoningEffort") not in (*BASE_EFFORTS, HIGH_EFFORT)
-            or row.get("status") not in {"ok", "error"}
+            or status not in {"ok", "error"}
+            or (status == "ok" and not isinstance(actual, dict))
+            or (status == "error" and "actual" in row)
             or key in results
         ):
             raise EvalPreflightError("existing eval output contains an invalid result")
@@ -838,14 +879,20 @@ def build_schedule(
                     "reason": "not_in_account_catalog",
                 })
 
-    # Interleave the base matrix by receipt and rotate model order so a late
-    # throttle or transient outage does not systematically target one tier.
+    # Interleave the base matrix by receipt and rotate both model and effort
+    # order, so drift, a late throttle, or a transient outage does not
+    # systematically target one tier or reasoning level.
     for case_index, case in enumerate(cases):
         rotated = available[case_index % len(available):] + available[:case_index % len(available)]
-        for effort in BASE_EFFORTS:
+        effort_order = (
+            BASE_EFFORTS
+            if case_index % 2 == 0
+            else tuple(reversed(BASE_EFFORTS))
+        )
+        for effort in effort_order:
             schedule.extend((case, model, effort) for model in rotated)
 
-    # The explicitly selected quality-first configurations always run second.
+    available_high: list[str] = []
     for model in requested_high:
         if model not in available:
             skipped.append({
@@ -854,29 +901,46 @@ def build_schedule(
                 "reason": "not_in_account_catalog",
             })
             continue
-        schedule.extend((case, model, HIGH_EFFORT) for case in cases)
+        available_high.append(model)
+    # The explicitly selected quality-first configurations always run second,
+    # interleaved by case and rotated to avoid ordering bias when comparing more
+    # than one high-effort candidate.
+    for case_index, case in enumerate(cases):
+        if not available_high:
+            break
+        offset = case_index % len(available_high)
+        rotated = available_high[offset:] + available_high[:offset]
+        schedule.extend((case, model, HIGH_EFFORT) for model in rotated)
     return schedule, skipped
 
 
 def contract_fingerprint(
     cases: list[PreparedCase],
     *,
-    prompt_builder: Callable[[str, str], str],
+    prompt_builder: Callable[[str, str], Any],
     output_schema: dict[str, Any],
     base_instructions: str,
 ) -> tuple[str, str]:
     prompt_contracts = sorted({
-        prompt_builder(case.context.locale, case.context.currency) for case in cases
+        (
+            prompt_builder(case.context.locale, case.context.currency).instructions,
+            prompt_builder(case.context.locale, case.context.currency).user_input,
+        )
+        for case in cases
     })
     contract = sha256_bytes(
         canonical_json({
             "baseInstructions": base_instructions,
-            "prompts": prompt_contracts,
+            "prompts": [
+                {"instructions": instructions, "userInput": user_input}
+                for instructions, user_input in prompt_contracts
+            ],
             "schema": output_schema,
         })
     )
     evaluation = sha256_bytes(
         str(FORMAT_VERSION).encode("ascii"),
+        SCORING_VERSION.encode("ascii"),
         contract.encode("ascii"),
         *(case.fingerprint.encode("ascii") for case in cases),
     )
@@ -930,10 +994,14 @@ def build_output(
     scheduled_keys: set[tuple[str, str, str]],
     results: dict[tuple[str, str, str], dict[str, Any]],
 ) -> dict[str, Any]:
-    rows = sorted(results.values(), key=_result_sort_key)
+    rows = sorted(
+        (row for key, row in results.items() if key in scheduled_keys),
+        key=_result_sort_key,
+    )
     completed = len(scheduled_keys.intersection(results))
     return {
         "formatVersion": FORMAT_VERSION,
+        "scoringVersion": SCORING_VERSION,
         "createdAt": created_at,
         "updatedAt": utc_now(),
         "state": "complete" if completed == len(scheduled_keys) else "running",
@@ -986,9 +1054,15 @@ async def run(args: argparse.Namespace) -> None:
     from PIL import Image
 
     from app.config import get_settings
-    from app.providers.common import build_receipt_prompt, parse_json_content, schema_for
+    from app.providers.common import (
+        BASE_INSTRUCTIONS,
+        build_receipt_prompt,
+        parse_json_content,
+        schema_for,
+        strict_json_schema,
+    )
     from app.schemas.ai import ExtractionContext, ReceiptExtraction
-    from app.services.openai_codex import BASE_INSTRUCTIONS, OpenAICodexService
+    from app.services.openai_codex import OpenAICodexService
 
     settings = get_settings()
     cases = validate_dataset(
@@ -1010,7 +1084,7 @@ async def run(args: argparse.Namespace) -> None:
     if output_path in protected_inputs:
         raise EvalPreflightError("output path cannot overwrite a label or image input")
     args.output = output_path
-    output_schema = schema_for(ReceiptExtraction)
+    output_schema = strict_json_schema(schema_for(ReceiptExtraction))
     contract_hash, evaluation_fingerprint = contract_fingerprint(
         cases,
         prompt_builder=build_receipt_prompt,
@@ -1069,9 +1143,13 @@ async def run(args: argparse.Namespace) -> None:
             started = time.perf_counter()
 
             async def operation() -> Any:
+                prompt = build_receipt_prompt(
+                    case.context.locale, case.context.currency
+                )
                 content = await service.structured_completion(
                     model=model,
-                    prompt=build_receipt_prompt(case.context.locale, case.context.currency),
+                    instructions=prompt.instructions,
+                    user_input=prompt.user_input,
                     output_schema=output_schema,
                     image_bytes=image_bytes,
                     mime_type=case.mime_type,
@@ -1089,6 +1167,10 @@ async def run(args: argparse.Namespace) -> None:
                 result: dict[str, Any] = {
                     "status": "ok",
                     "attempts": attempts,
+                    # The eval report is private and mode 0600. Keeping the
+                    # canonical prediction makes scorer audits possible without
+                    # spending another subscription call.
+                    "actual": actual.model_dump(mode="json", by_alias=True),
                     **metrics,
                 }
             except ClassifiedCallError as error:

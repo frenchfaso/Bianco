@@ -6,7 +6,13 @@ import { fitCropMagnifierSize, placeCropMagnifier } from './images/crop-magnifie
 import { getImageUrl } from './images/repository.js'
 import { i18next, localeForLanguage, resolveLanguage, setLanguage } from './i18n/index.js'
 import { computeInsights, insightSnapshot, UNKNOWN_MERCHANT_ID } from './insights/compute.js'
-import { isSummaryCurrent, summaryDatasetHash } from './insights/summary-cache.js'
+import {
+  activeInsightConfigurationFingerprint,
+  isSummaryCurrent,
+  normalizeInsightConfigurationFingerprint,
+  sameSummaryIdentity,
+  summaryDatasetHash
+} from './insights/summary-cache.js'
 import { categories, categoryMap } from './stores/categories.js'
 import {
   applyReceiptAggregate,
@@ -37,7 +43,7 @@ const THEME_STORAGE_KEY = 'bianco-theme'
 const LANGUAGE_STORAGE_KEY = 'bianco-language'
 const INSTALL_DISMISSED_STORAGE_KEY = 'bianco-install-dismissed-at'
 const INSTALL_DISMISSAL_TTL_MS = 7 * 24 * 60 * 60 * 1000
-const SUMMARY_PROMPT_VERSION = 'insights-v2-major-units'
+const SUMMARY_PROMPT_VERSION = 'insights-v3-authority-major-units'
 const INSIGHT_MINIMUM_PERCENT = 20
 const INSIGHT_MINIMUM_MINOR = 1000
 const MAX_CAPTURE_BYTES = 10 * 1024 * 1024
@@ -118,6 +124,10 @@ export function biancoApp() {
     itemsReady: false,
     summaryValidationRevision: 0,
     aiSummaryCurrent: false,
+    // `undefined` means that no backend status has been observed yet. This
+    // preserves a valid cached summary while offline; a successful refresh
+    // replaces it with either a digest or `null` (no active provider).
+    insightConfigurationFingerprint: undefined,
     receipts: [],
     items: [],
     jobs: [],
@@ -130,17 +140,13 @@ export function biancoApp() {
     providerConnectionState: 'idle',
     providerConnectionMessageKey: '',
     providerConnectionMessageOptions: {},
-    openAiModels: [],
-    openAiModelsLoading: false,
-    openAiModelsRequestId: 0,
     openAiLogin: null,
     openAiLoginPollTimer: null,
     providerForm: {
       id: '',
       baseUrl: '',
       apiKey: '',
-      clearApiKey: false,
-      model: ''
+      clearApiKey: false
     },
     categoryChart: null,
     spendingChart: null,
@@ -418,7 +424,8 @@ export function biancoApp() {
     recompute() {
       this.insights = computeInsights(this.receipts, this.items, {
         minimumMinor: INSIGHT_MINIMUM_MINOR,
-        minimumPercent: INSIGHT_MINIMUM_PERCENT
+        minimumPercent: INSIGHT_MINIMUM_PERCENT,
+        defaultCurrency: this.settings.defaultCurrency
       })
       this.aiSummaryCurrent = false
       void this.validateAiSummary()
@@ -443,13 +450,19 @@ export function biancoApp() {
         SUMMARY_PROMPT_VERSION
       )
       if (revision !== this.summaryValidationRevision || this.settings.aiSummary !== summary) return
-      if (isSummaryCurrent(summary, expectedHash, SUMMARY_PROMPT_VERSION)) {
+      if (isSummaryCurrent(
+        summary,
+        expectedHash,
+        SUMMARY_PROMPT_VERSION,
+        this.insightConfigurationFingerprint
+      )) {
         this.aiSummaryCurrent = true
         return
       }
       this.settings = { ...this.settings, aiSummary: null }
       const document = await database?.settings.findOne('singleton').exec()
-      if (document?.aiSummary?.datasetHash === summary.datasetHash) {
+      const storedSummary = document?.aiSummary
+      if (sameSummaryIdentity(storedSummary, summary)) {
         await document.incrementalPatch({ aiSummary: null })
       }
     },
@@ -1237,6 +1250,14 @@ export function biancoApp() {
       this.updateProvider(activated)
     },
 
+    refreshInsightConfigurationFingerprint() {
+      const fingerprint = activeInsightConfigurationFingerprint(this.providers)
+      if (this.insightConfigurationFingerprint === fingerprint) return
+      this.insightConfigurationFingerprint = fingerprint
+      this.aiSummaryCurrent = false
+      void this.validateAiSummary()
+    },
+
     async refreshProviders(showErrors = true, alignWithActive = false) {
       if (!this.online) return
       const requestId = ++this.providersRefreshRequestId
@@ -1252,10 +1273,9 @@ export function biancoApp() {
             await this.activateAiProvider(availableProviders[0].id)
           }
         }
-        const activeSelectionChanged = alignWithActive && activeProvider && !this.providerBusy && (
-          this.providerForm.id !== activeProvider.id ||
-          (activeProvider.id === 'openai' && this.providerForm.model !== (activeProvider.selectedModel || ''))
-        )
+        this.refreshInsightConfigurationFingerprint()
+        const activeSelectionChanged = alignWithActive && activeProvider && !this.providerBusy &&
+          this.providerForm.id !== activeProvider.id
         if (activeSelectionChanged) {
           this.editProvider(activeProvider.id)
         } else if (!this.providerForm.id || !this.providers.some((provider) => provider.id === this.providerForm.id)) {
@@ -1270,37 +1290,65 @@ export function biancoApp() {
 
     editProvider(providerId) {
       this.providerRequestId += 1
-      this.openAiModelsRequestId += 1
       this.providerBusy = false
       this.stopOpenAiLoginPolling()
       this.openAiLogin = null
-      this.openAiModels = []
       const provider = this.providers.find((entry) => entry.id === providerId)
       this.providerConnectionState = 'idle'
       this.setProviderConnectionMessage(provider?.id === 'openai'
         ? provider.chatgptConnected
-          ? provider.selectedModel
+          ? provider.active && provider.available
             ? 'provider.providerActive'
-            : 'provider.chooseModel'
+            : 'provider.backendUnavailable'
           : 'provider.connectChatgpt'
         : !provider?.baseUrl
           ? 'provider.enterEndpoint'
           : provider.requiresApiKey && !provider.hasApiKey
             ? 'provider.enterApiKey'
-            : 'provider.checking', provider?.id === 'openai' && provider.selectedModel
+            : 'provider.checking', provider?.id === 'openai' && provider.active
               ? { provider: this.providerLabel(provider) }
               : {})
       this.providerForm = {
         id: provider?.id || '',
         baseUrl: provider?.baseUrl || '',
         apiKey: '',
-        clearApiKey: false,
-        model: provider?.selectedModel || ''
+        clearApiKey: false
       }
-      if (this.online && provider?.id === 'openai' && provider.chatgptConnected) {
-        void this.loadOpenAiModels()
-      } else if (this.online && provider?.baseUrl && (!provider.requiresApiKey || provider.hasApiKey)) {
+      if (this.online && provider?.id !== 'openai' && provider?.baseUrl && (!provider.requiresApiKey || provider.hasApiKey)) {
         void this.validateProviderConnection()
+      }
+    },
+
+    async selectAiProvider(providerId) {
+      this.editProvider(providerId)
+      const requestId = this.providerRequestId
+      const provider = this.providers.find((entry) => entry.id === providerId)
+      // Endpoint-based providers are saved, validated and activated by
+      // editProvider() -> validateProviderConnection(). OpenAI has no endpoint
+      // form, so a connected inactive subscription needs this direct path.
+      if (providerId !== 'openai') return
+      if (!this.online || !provider?.configured || !provider.available || provider.active) return
+      this.providerBusy = true
+      this.providerConnectionState = 'checking'
+      this.setProviderConnectionMessage('provider.checking')
+      try {
+        const response = await apiFetch(`/api/ai/providers/${encodeURIComponent(providerId)}/active`, {
+          method: 'PUT'
+        })
+        const activated = await response.json()
+        if (requestId !== this.providerRequestId || providerId !== this.providerForm.id) return
+        this.updateProvider(activated)
+        this.providerConnectionState = 'ready'
+        this.setProviderConnectionMessage('provider.providerActive', {
+          provider: this.providerLabel(activated)
+        })
+        void this.runJobs()
+      } catch {
+        if (requestId !== this.providerRequestId || providerId !== this.providerForm.id) return
+        this.providerConnectionState = 'error'
+        this.setProviderConnectionMessage('provider.activationFailed')
+      } finally {
+        if (requestId === this.providerRequestId) this.providerBusy = false
       }
     },
 
@@ -1325,6 +1373,7 @@ export function biancoApp() {
       const index = this.providers.findIndex((entry) => entry.id === provider.id)
       if (index === -1) this.providers = [...this.providers, provider]
       else this.providers = this.providers.map((entry) => entry.id === provider.id ? provider : entry)
+      this.refreshInsightConfigurationFingerprint()
     },
 
     async validateProviderConnection() {
@@ -1434,7 +1483,7 @@ export function biancoApp() {
           this.stopOpenAiLoginPolling()
           this.openAiLogin = null
           await this.refreshProviders(false)
-          if (this.providerForm.id === 'openai') await this.loadOpenAiModels()
+          if (this.providerForm.id === 'openai') this.editProvider('openai')
           return
         }
         if (status.status === 'expired' || status.status === 'unknown') {
@@ -1452,68 +1501,6 @@ export function biancoApp() {
       }
     },
 
-    async loadOpenAiModels() {
-      if (!this.online || this.providerForm.id !== 'openai') return
-      const requestId = ++this.openAiModelsRequestId
-      this.openAiModelsLoading = true
-      try {
-        const response = await apiFetch('/api/ai/providers/openai/models')
-        const payload = await response.json()
-        if (requestId !== this.openAiModelsRequestId || this.providerForm.id !== 'openai') return
-        this.openAiModels = Array.isArray(payload.models) ? payload.models : []
-        const selected = payload.selectedModel || ''
-        // Let Alpine render the asynchronous <option> list before selecting.
-        // Safari otherwise keeps the visible select on its empty placeholder.
-        this.providerForm.model = ''
-        await new Promise((resolve) => {
-          if (typeof this.$nextTick === 'function') this.$nextTick(resolve)
-          else globalThis.queueMicrotask(resolve)
-        })
-        if (requestId !== this.openAiModelsRequestId || this.providerForm.id !== 'openai') return
-        this.providerForm.model = this.openAiModels.some((model) => model.id === selected) ? selected : ''
-        this.providerConnectionState = this.providerForm.model ? 'ready' : 'idle'
-        this.setProviderConnectionMessage(this.providerForm.model
-          ? 'provider.providerActive'
-          : this.openAiModels.length
-            ? 'provider.chooseModel'
-            : 'provider.noModels', this.providerForm.model
-              ? { provider: this.providerLabel(this.editingProvider) }
-              : {})
-      } catch {
-        if (requestId !== this.openAiModelsRequestId) return
-        this.openAiModels = []
-        this.providerConnectionState = 'error'
-        this.setProviderConnectionMessage('provider.modelsUnavailable')
-      } finally {
-        if (requestId === this.openAiModelsRequestId) this.openAiModelsLoading = false
-      }
-    },
-
-    async selectOpenAiModel() {
-      const model = this.providerForm.model
-      if (!model || !this.openAiModels.some((entry) => entry.id === model)) return
-      this.providerBusy = true
-      this.providerConnectionState = 'checking'
-      this.setProviderConnectionMessage('provider.activatingModel')
-      try {
-        const response = await apiFetch('/api/ai/providers/openai/model', {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ model })
-        })
-        const provider = await response.json()
-        this.updateProvider(provider)
-        this.providerConnectionState = 'ready'
-        this.setProviderConnectionMessage('provider.providerActive', { provider: this.providerLabel(provider) })
-        void this.runJobs()
-      } catch {
-        this.providerConnectionState = 'error'
-        this.setProviderConnectionMessage('provider.activationFailed')
-      } finally {
-        this.providerBusy = false
-      }
-    },
-
     async disconnectOpenAiSubscription() {
       if (this.providerBusy) return
       this.providerBusy = true
@@ -1521,8 +1508,6 @@ export function biancoApp() {
         await apiFetch('/api/ai/providers/openai/chatgpt', { method: 'DELETE' })
         this.stopOpenAiLoginPolling()
         this.openAiLogin = null
-        this.openAiModels = []
-        this.providerForm.model = ''
         await this.refreshProviders(false)
         if (this.providerForm.id === 'openai') this.editProvider('openai')
         this.notify(this.t('notification.chatgptDisconnected'))
@@ -1542,9 +1527,16 @@ export function biancoApp() {
           method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(snapshot)
         })
         const generated = generatedInsightsSchema.parse(await response.json())
+        const configurationFingerprint = normalizeInsightConfigurationFingerprint(
+          response.headers.get('X-Bianco-AI-Configuration-Fingerprint')
+        )
+        if (!configurationFingerprint) throw new Error('Missing AI configuration fingerprint')
+        this.insightConfigurationFingerprint = configurationFingerprint
+        const generatedBy = { configurationFingerprint }
         const document = await database.settings.findOne('singleton').exec()
         await document.incrementalPatch({ aiSummary: {
           ...generated,
+          generatedBy,
           promptVersion: SUMMARY_PROMPT_VERSION,
           datasetHash: hash,
           generatedAt: new Date().toISOString()
@@ -1711,13 +1703,6 @@ export function biancoApp() {
         : this.t('date.unknown')
     },
     categoryLabel(id) { return this.t(`category.${categoryTranslationKeys[id] || 'other'}`) },
-    localizedAiText(value) {
-      if (typeof value !== 'string') return ''
-      return Object.keys(categoryTranslationKeys).reduce(
-        (text, id) => text.replace(new RegExp(`\\b${id}\\b`, 'gi'), this.categoryLabel(id)),
-        value
-      )
-    },
     categoryColor(id) { return categoryMap[id]?.color || '#64748b' },
     merchantLabel(id) { return id === UNKNOWN_MERCHANT_ID ? this.t('archive.unknownMerchant') : id },
     providerLabel(provider) {
@@ -1725,10 +1710,6 @@ export function biancoApp() {
       const fallback = typeof provider === 'string' ? provider : provider?.label
       const key = providerTranslationKeys[id]
       return key ? this.t(`provider.name.${key}`) : (fallback || id || '')
-    },
-    modelDisplayName(model) {
-      const label = model?.displayName || model?.id || ''
-      return model?.isDefault ? `${label} · ${this.t('settings.ai.recommended')}` : label
     },
     statusLabel(status) { return this.t(`receiptStatus.${statusTranslationKeys[status] || status}`, { defaultValue: status }) },
     insightText(entry) {

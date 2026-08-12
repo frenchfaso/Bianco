@@ -28,8 +28,12 @@ python3 scripts/eval_gpt56_receipts.py
 
 A real run requires both cost gates. Before the first model request, it validates
 all labels and images, confirms the ChatGPT connection, and fetches the live model
-catalog. Credentials stay encrypted in the backend data directory; results never
-contain tokens or raw model output.
+catalog. Credentials stay encrypted in the backend data directory and results never
+contain tokens. The private checkpoint does contain each canonical structured
+prediction: this is necessary to audit or improve the scorer without paying for
+the same model calls again. It is created mode `0600`; keep it in the ignored
+`dataset/results/` directory or another private location, and never commit or
+share it.
 
 Use the production-equivalent, geometry-corrected 3200 px images. Using the source
 photos would benchmark a different pipeline:
@@ -56,7 +60,10 @@ queue is empty, to avoid two processes refreshing the same subscription token:
 ```sh
 cd ~/Code/Bianco
 docker compose run --rm --no-deps \
-  -v "$PWD:/work:ro" -w /work api \
+  -v "$PWD/scripts:/work/scripts:ro" \
+  -v "$PWD/server:/work/server:ro" \
+  -v "$PWD/dataset:/work/dataset:ro" \
+  -w /work api \
   python scripts/eval_gpt56_receipts.py \
   --dataset /work/dataset \
   --image-root /work/dataset/processed/geometry-3200 \
@@ -95,12 +102,13 @@ failure stops the full run while preserving its checkpoint.
 
 ## Reading the result
 
-Purchased lines are matched one-to-one by normalized names only. Prices, quantity,
-and category are measured after matching, so a correct amount cannot bias which
-line gets paired. Missing ground-truth values are marked not applicable instead of
-being rewarded as `null == null`; the receipt-level compatibility category is not
-scored. A payment-only document receives zero recall and precision when the model
-invents article lines.
+Purchased lines are matched one-to-one by normalized names only, using a global
+maximum-weight assignment. Prices, quantity, and category are measured after
+matching, so a correct amount cannot bias which line gets paired. A labelled
+`null` is evidence of absence: returning `null` is correct, while inventing an
+unprinted header or line value is penalized. The receipt-level compatibility
+category is not scored. A payment-only document receives zero recall and precision
+when the model invents article lines.
 
 The report includes schema validity, merchant similarity, independently reported
 header fields, exact total, line recall/precision, name similarity, exact total and
@@ -109,8 +117,13 @@ attempts, success rate, and categorized failures. Invalid model output receives
 zero effective quality. Authentication, network and provider availability failures
 remain visible but do not masquerade as model-quality zeros.
 
-Choose a configuration primarily from schema validity, total, line-price accuracy,
-and recall. Use latency as a secondary signal because Bianco processes receipts in
-the backend queue. Seventeen receipts are useful for selection but still a small
-sample: re-run the unchanged protocol as the labelled set grows, and do not choose
-from a single receipt or subjective inspection.
+Configurations are ranked once by the documented composite quality score; schema
+validity, total, line-price accuracy and recall are separate safety guardrails, not
+double-counted ranking weights. The analyzer compares the observed top two on the
+same receipt fingerprints and reports a paired bootstrap interval plus
+win/tie/loss evidence. If that evidence is not decisive it reports the best
+observed configuration without claiming a statistically supported winner. Use
+latency as a secondary signal because Bianco processes receipts in the backend
+queue. Seventeen receipts are useful for selection but still a small sample:
+re-run the unchanged protocol as the labelled set grows, and do not choose from a
+single receipt or subjective inspection.

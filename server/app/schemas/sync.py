@@ -1,5 +1,5 @@
 import json
-from datetime import date, datetime
+from datetime import datetime
 from typing import Annotated, Any, Literal
 
 from pydantic import (
@@ -12,6 +12,8 @@ from pydantic import (
     model_validator,
 )
 
+from app.schemas.receipt_fields import CurrencyCode, ReceiptDate
+
 MAX_SYNC_ROWS = 100
 MAX_SYNC_DOCUMENT_BYTES = 128 * 1024
 MAX_SAFE_INTEGER = 9_007_199_254_740_991
@@ -22,11 +24,13 @@ DocumentId = Annotated[
     StringConstraints(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_-]+$"),
 ]
 ShortText = Annotated[str, StringConstraints(max_length=300)]
+# Replicated documents can contain category identifiers created by older
+# clients. Keep this boundary backward-compatible until a data migration can
+# rewrite them; the stricter enum belongs at the AI extraction boundary.
 CategoryId = Annotated[
     str,
     StringConstraints(min_length=1, max_length=80, pattern=r"^[A-Za-z0-9_-]+$"),
 ]
-CurrencyCode = Annotated[str, StringConstraints(pattern=r"^[A-Z]{3}$")]
 Timestamp = Annotated[str, StringConstraints(min_length=20, max_length=40)]
 NullableAmount = int | None
 
@@ -87,9 +91,7 @@ class ReceiptSyncDocument(SyncDocumentBase):
         "manual",
     ]
     captured_at: Timestamp = Field(alias="capturedAt")
-    transaction_date: Annotated[str, StringConstraints(pattern=r"^\d{4}-\d{2}-\d{2}$")] | None = Field(
-        alias="transactionDate"
-    )
+    transaction_date: ReceiptDate | None = Field(alias="transactionDate")
     merchant_raw: ShortText | None = Field(alias="merchantRaw")
     merchant_normalized: ShortText | None = Field(alias="merchantNormalized")
     currency: CurrencyCode
@@ -112,16 +114,6 @@ class ReceiptSyncDocument(SyncDocumentBase):
     ai: ReceiptAiMetadata
 
     _captured_timestamp = field_validator("captured_at")(_validate_timestamp)
-
-    @field_validator("transaction_date")
-    @classmethod
-    def validate_transaction_date(cls, value: str | None) -> str | None:
-        if value is not None:
-            try:
-                date.fromisoformat(value)
-            except ValueError as error:
-                raise ValueError("must be a real ISO 8601 calendar date") from error
-        return value
 
 
 class ReceiptItemSyncDocument(SyncDocumentBase):
@@ -199,9 +191,7 @@ class ReceiptAggregateHeader(ApiModel):
     """The receipt fields a person may edit without replacing AI provenance."""
 
     merchant_normalized: ShortText | None = Field(alias="merchantNormalized")
-    transaction_date: Annotated[
-        str, StringConstraints(pattern=r"^\d{4}-\d{2}-\d{2}$")
-    ] | None = Field(alias="transactionDate")
+    transaction_date: ReceiptDate | None = Field(alias="transactionDate")
     currency: CurrencyCode
     subtotal_minor: NullableAmount = Field(
         alias="subtotalMinor", ge=0, le=MAX_SAFE_INTEGER
@@ -212,16 +202,6 @@ class ReceiptAggregateHeader(ApiModel):
     )
     total_minor: NullableAmount = Field(alias="totalMinor", ge=0, le=MAX_SAFE_INTEGER)
     category_id: CategoryId = Field(alias="categoryId")
-
-    @field_validator("transaction_date")
-    @classmethod
-    def validate_transaction_date(cls, value: str | None) -> str | None:
-        if value is not None:
-            try:
-                date.fromisoformat(value)
-            except ValueError as error:
-                raise ValueError("must be a real ISO 8601 calendar date") from error
-        return value
 
 
 class ReceiptAggregateItemInput(ApiModel):

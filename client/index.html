@@ -71,6 +71,9 @@
                 <small x-text="t('dashboard.previousComparison')"></small>
               </p>
               <p x-show="insights.previousTotal === 0"><small x-text="t('dashboard.noPreviousComparison')"></small></p>
+              <p x-show="insights.excludedCurrencyCount > 0">
+                <small x-text="t('dashboard.otherCurrenciesExcluded', { count: insights.excludedCurrencyCount })"></small>
+              </p>
             </article>
             <article x-show="attentionCount > 0" class="attention-summary">
               <small x-text="t('dashboard.needsAttention')"></small>
@@ -108,10 +111,10 @@
                 <small x-text="t('dashboard.insights.aiAggregatedOnly')"></small>
                 <ul>
                   <template x-for="observation in (settings.aiSummary?.observations || [])" :key="observation">
-                    <li x-text="localizedAiText(observation)"></li>
+                    <li x-text="observation"></li>
                   </template>
                 </ul>
-                <p x-show="settings.aiSummary?.suggestion" x-text="localizedAiText(settings.aiSummary?.suggestion)"></p>
+                <p x-show="settings.aiSummary?.suggestion" x-text="settings.aiSummary?.suggestion"></p>
               </div>
               <button
                 x-show="activeProvider"
@@ -314,7 +317,7 @@
               <p class="muted" x-show="!providers.length" x-text="t('settings.ai.unavailableOffline')"></p>
               <div x-show="providers.length">
                 <label><span x-text="t('settings.ai.provider')"></span>
-                  <select x-model="providerForm.id" @change="editProvider($event.target.value)">
+                  <select x-model="providerForm.id" @change="selectAiProvider($event.target.value)">
                     <template x-for="provider in providers" :key="`config-${provider.id}`">
                       <option :value="provider.id" x-text="providerLabel(provider)"></option>
                     </template>
@@ -339,14 +342,6 @@
                   <template x-if="editingProvider?.chatgptConnected">
                     <div>
                       <p class="subscription-status"><span x-text="t('settings.ai.connectedPlan')"></span> <strong x-text="editingProvider?.planType || t('common.notAvailable')"></strong></p>
-                      <label><span x-text="t('settings.ai.model')"></span>
-                        <select x-model="providerForm.model" @change="selectOpenAiModel" :disabled="openAiModelsLoading || providerBusy">
-                          <option value="" x-text="openAiModelsLoading ? t('settings.ai.loadingModels') : t('settings.ai.chooseModel')"></option>
-                          <template x-for="model in openAiModels" :key="model.id">
-                            <option :value="model.id" x-text="modelDisplayName(model)"></option>
-                          </template>
-                        </select>
-                      </label>
                       <button type="button" class="outline compact" @click="disconnectOpenAiSubscription" :aria-busy="providerBusy" x-text="t('settings.ai.disconnectChatgpt')"></button>
                     </div>
                   </template>

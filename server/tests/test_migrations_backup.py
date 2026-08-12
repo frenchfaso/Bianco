@@ -38,8 +38,12 @@ def test_backup_archive_contains_consistent_database_and_receipt_files(tmp_path)
     with sqlite3.connect(database) as connection:
         assert connection.execute("PRAGMA integrity_check").fetchone() == ("ok",)
         assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == (
-            "0004_openai_subscription_only",
+            "0005_internal_ai_job_model",
         )
+        columns = {
+            row[1]: row for row in connection.execute("PRAGMA table_info(ai_extraction_jobs)")
+        }
+        assert columns["model_id"][3] == 0
 
     marker.write_bytes(b"changed-after-backup")
     engine.dispose()

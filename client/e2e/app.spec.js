@@ -12,10 +12,12 @@ const contextDefaults = {
   ignoreHTTPSErrors: true
 }
 
+const testInsightConfigurationFingerprint = 'a'.repeat(64)
+
 const testProviders = () => [
-  { id: 'openai', label: 'OpenAI · ChatGPT subscription', configured: false, available: false, active: false, baseUrl: '', hasApiKey: false, requiresApiKey: false, source: 'environment', chatgptConnected: false, planType: null, selectedModel: null, subscriptionOnly: true },
-  { id: 'ollama', label: 'Ollama', configured: false, available: false, active: false, baseUrl: '', hasApiKey: false, requiresApiKey: false, source: 'environment' },
-  { id: 'openai-compatible', label: 'Altro / OpenAI-compatible', configured: false, available: false, active: false, baseUrl: '', hasApiKey: false, requiresApiKey: false, source: 'environment' }
+  { id: 'openai', label: 'OpenAI · ChatGPT subscription', configured: false, available: false, active: false, baseUrl: '', hasApiKey: false, requiresApiKey: false, source: 'environment', chatgptConnected: false, planType: null, subscriptionOnly: true, insightConfigurationFingerprint: null },
+  { id: 'ollama', label: 'Ollama', configured: false, available: false, active: false, baseUrl: '', hasApiKey: false, requiresApiKey: false, source: 'environment', insightConfigurationFingerprint: null },
+  { id: 'openai-compatible', label: 'Altro / OpenAI-compatible', configured: false, available: false, active: false, baseUrl: '', hasApiKey: false, requiresApiKey: false, source: 'environment', insightConfigurationFingerprint: null }
 ]
 
 function newBiancoContext(browser, options = {}) {
@@ -481,6 +483,7 @@ test('receipt images upload by hash and download lazily on another device', asyn
 
 test('Ollama validates the endpoint and activates the backend pipeline automatically', async ({ page }) => {
   const writes = []
+  let activations = 0
   await page.route('**/api/ai/providers**', async (route) => {
     const request = route.request()
     const url = new URL(request.url())
@@ -493,15 +496,18 @@ test('Ollama validates the endpoint and activates the backend pipeline automatic
       writes.push(payload)
       await route.fulfill({ json: {
         id: 'ollama', label: 'Ollama', configured: true, available: true, active: false,
-        baseUrl: payload.baseUrl, hasApiKey: false, requiresApiKey: false, source: 'database'
+        baseUrl: payload.baseUrl, hasApiKey: false, requiresApiKey: false, source: 'database',
+        insightConfigurationFingerprint: testInsightConfigurationFingerprint
       } })
       return
     }
     if (url.pathname === '/api/ai/providers/ollama/active' && request.method() === 'PUT') {
+      activations += 1
       await route.fulfill({ json: {
         id: 'ollama', label: 'Ollama', configured: true, available: true, active: true,
         baseUrl: 'http://host.containers.internal:11434',
-        hasApiKey: false, requiresApiKey: false, source: 'database'
+        hasApiKey: false, requiresApiKey: false, source: 'database',
+        insightConfigurationFingerprint: testInsightConfigurationFingerprint
       } })
       return
     }
@@ -532,6 +538,7 @@ test('Ollama validates the endpoint and activates the backend pipeline automatic
     clearApiKey: false
   })
   expect(writes.every((payload) => !Object.hasOwn(payload, 'model'))).toBe(true)
+  expect(activations).toBe(1)
 })
 
 test('the configured backend pipeline is active on a new device and populates a captured receipt', async ({ page }) => {
@@ -547,7 +554,8 @@ test('the configured backend pipeline is active on a new device and populates a 
     available: true,
     active: true,
     baseUrl: 'http://host.containers.internal:11434',
-    source: 'database'
+    source: 'database',
+    insightConfigurationFingerprint: testInsightConfigurationFingerprint
   } : provider)
   await page.route('**/api/ai/**', async (route) => {
     const request = route.request()
@@ -851,19 +859,9 @@ test('automatic language follows a supported German browser locale', async ({ br
   }
 })
 
-test('ChatGPT device login loads and activates an entitled Codex model', async ({ page }) => {
+test('ChatGPT device login activates the backend-managed AI configuration', async ({ page }) => {
   let connected = false
-  let selectedModel = null
-  const entitledModels = [
-    {
-      id: 'gpt-codex-test', displayName: 'GPT Codex Test', description: 'Test model',
-      isDefault: true, defaultReasoningEffort: 'medium', inputModalities: ['text', 'image']
-    },
-    {
-      id: 'gpt-codex-other', displayName: 'GPT Codex Other', description: 'Other model',
-      isDefault: false, defaultReasoningEffort: 'medium', inputModalities: ['text', 'image']
-    }
-  ]
+  let modelRequests = 0
   await page.route('**/api/ai/providers**', async (route) => {
     const request = route.request()
     const url = new URL(request.url())
@@ -871,12 +869,14 @@ test('ChatGPT device login loads and activates an entitled Codex model', async (
       const providers = testProviders()
       providers[0] = {
         ...providers[0],
-        configured: connected && Boolean(selectedModel),
-        available: connected && Boolean(selectedModel),
-        active: connected && Boolean(selectedModel),
+        configured: connected,
+        available: connected,
+        active: connected,
         chatgptConnected: connected,
         planType: connected ? 'plus' : null,
-        selectedModel
+        insightConfigurationFingerprint: connected
+          ? testInsightConfigurationFingerprint
+          : null
       }
       await route.fulfill({ json: { providers } })
       return
@@ -894,19 +894,9 @@ test('ChatGPT device login loads and activates an entitled Codex model', async (
       await route.fulfill({ json: { connected: true, planType: 'plus', status: 'connected' } })
       return
     }
-    if (url.pathname === '/api/ai/providers/openai/models' && request.method() === 'GET') {
-      await route.fulfill({ json: {
-        selectedModel,
-        models: entitledModels
-      } })
-      return
-    }
-    if (url.pathname === '/api/ai/providers/openai/model' && request.method() === 'PUT') {
-      selectedModel = request.postDataJSON().model
-      await route.fulfill({ json: {
-        ...testProviders()[0], configured: true, available: true, active: true,
-        chatgptConnected: true, planType: 'plus', selectedModel, source: 'database'
-      } })
+    if (url.pathname.includes('/api/ai/providers/openai/model')) {
+      modelRequests += 1
+      await route.fulfill({ status: 500, json: { detail: 'The PWA must not select models' } })
       return
     }
     await route.continue()
@@ -919,15 +909,75 @@ test('ChatGPT device login loads and activates an entitled Codex model', async (
   await settings.getByLabel('Provider AI').selectOption('openai')
   await settings.getByRole('button', { name: 'Collega ChatGPT' }).click()
   await expect(settings.getByText('TEST-CODE')).toBeVisible()
-  const models = settings.getByLabel('Modello Codex')
-  await expect(models).toBeVisible({ timeout: 5000 })
-  await models.selectOption('gpt-codex-test')
-  await expect(models).toHaveValue('gpt-codex-test')
-  await expect(settings.getByText('OpenAI è collegato e attivo.')).toBeVisible()
+  await expect(settings.getByText('OpenAI è collegato e attivo.')).toBeVisible({ timeout: 5000 })
+  await expect(settings.getByLabel('Modello Codex')).toHaveCount(0)
+  expect(modelRequests).toBe(0)
 
   await settings.getByRole('button', { name: 'Chiudi impostazioni' }).click()
-  selectedModel = 'gpt-codex-other'
   await trigger.click()
   settings = page.getByRole('dialog', { name: 'Impostazioni' })
-  await expect(settings.getByLabel('Modello Codex')).toHaveValue('gpt-codex-other')
+  await expect(settings.getByText('Piano collegato:')).toBeVisible()
+  await expect(settings.getByLabel('Modello Codex')).toHaveCount(0)
+})
+
+test('selecting a connected provider activates it without exposing model controls', async ({ page }) => {
+  let activeProvider = 'ollama'
+  let openAiActivations = 0
+  await page.route('**/api/ai/providers**', async (route) => {
+    const request = route.request()
+    const url = new URL(request.url())
+    const providers = testProviders().map((provider) => {
+      if (provider.id === 'openai') return {
+        ...provider,
+        configured: true,
+        available: true,
+        active: activeProvider === 'openai',
+        chatgptConnected: true,
+        planType: 'plus',
+        insightConfigurationFingerprint: testInsightConfigurationFingerprint
+      }
+      if (provider.id === 'ollama') return {
+        ...provider,
+        configured: true,
+        available: true,
+        active: activeProvider === 'ollama',
+        baseUrl: 'http://host.containers.internal:11434',
+        insightConfigurationFingerprint: testInsightConfigurationFingerprint
+      }
+      return provider
+    })
+    if (url.pathname === '/api/ai/providers' && request.method() === 'GET') {
+      await route.fulfill({ json: { providers } })
+      return
+    }
+    if (url.pathname === '/api/ai/providers/ollama' && request.method() === 'PUT') {
+      await route.fulfill({ json: providers.find((provider) => provider.id === 'ollama') })
+      return
+    }
+    if (url.pathname === '/api/ai/providers/ollama/active' && request.method() === 'PUT') {
+      await route.fulfill({ json: providers.find((provider) => provider.id === 'ollama') })
+      return
+    }
+    if (url.pathname === '/api/ai/providers/openai/active' && request.method() === 'PUT') {
+      openAiActivations += 1
+      activeProvider = 'openai'
+      await route.fulfill({ json: {
+        ...providers.find((provider) => provider.id === 'openai'),
+        active: true
+      } })
+      return
+    }
+    await route.continue()
+  })
+
+  await page.goto('/')
+  await settingsButton(page).click()
+  const settings = page.getByRole('dialog', { name: 'Impostazioni' })
+  await expect(settings.getByLabel('Provider AI')).toHaveValue('ollama')
+  await settings.getByLabel('Provider AI').selectOption('openai')
+
+  await expect(settings.getByText('OpenAI è collegato e attivo.')).toBeVisible()
+  await expect(settings.getByText('In uso:').locator('..')).toContainText('OpenAI')
+  await expect(settings.getByLabel('Modello Codex')).toHaveCount(0)
+  expect(openAiActivations).toBe(1)
 })

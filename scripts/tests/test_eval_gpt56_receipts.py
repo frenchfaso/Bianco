@@ -6,6 +6,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest import mock
 
 
 SCRIPT = Path(__file__).resolve().parents[1] / "eval_gpt56_receipts.py"
@@ -67,16 +68,80 @@ class EvalMetricTests(unittest.TestCase):
 
     def test_header_is_null_safe_and_excludes_total_and_legacy_category(self):
         expected = receipt([], total=300, currency="EUR", category="home")
-        actual = receipt([], total=999, currency="USD", category="restaurant")
+        actual = receipt(
+            [],
+            total=999,
+            currency="USD",
+            date="2026-01-01",
+            subtotal=80,
+            tax=20,
+            discount=5,
+            category="restaurant",
+        )
 
         metrics = evals.score(expected, actual)
 
         self.assertEqual(metrics["headerExact"], 0.0)
         self.assertEqual(metrics["currencyExact"], 0.0)
-        self.assertIsNone(metrics["transactionDateExact"])
-        self.assertIsNone(metrics["subtotalExact"])
+        self.assertEqual(metrics["transactionDateExact"], 0.0)
+        self.assertEqual(metrics["subtotalExact"], 0.0)
         self.assertEqual(metrics["totalExact"], 0.0)
         self.assertNotIn("categoryExact", metrics)
+
+    def test_labelled_null_fields_penalize_header_and_item_hallucinations(self):
+        self.assertEqual(evals._optional_exact(None, None), 1.0)
+        self.assertEqual(evals._optional_exact(None, 1), 0.0)
+        expected_item = item("MILK", None, quantity=None, unit_price=None)
+        actual_item = item("MILK", 300, quantity=2, unit_price=150)
+        expected = receipt([expected_item], total=None)
+        actual = receipt(
+            [actual_item],
+            total=300,
+            date="2026-01-01",
+            subtotal=300,
+            tax=30,
+            discount=10,
+        )
+
+        metrics = evals.score(expected, actual)
+
+        self.assertEqual(metrics["transactionDateExact"], 0.0)
+        self.assertEqual(metrics["subtotalExact"], 0.0)
+        self.assertEqual(metrics["taxExact"], 0.0)
+        self.assertEqual(metrics["discountExact"], 0.0)
+        self.assertEqual(metrics["totalExact"], 0.0)
+        self.assertEqual(metrics["itemPriceExact"], 0.0)
+        self.assertEqual(metrics["itemUnitPriceExact"], 0.0)
+        self.assertEqual(metrics["itemQuantityExact"], 0.0)
+
+    def test_name_similarity_has_no_perfect_substring_shortcut(self):
+        self.assertLess(evals.text_similarity("milk", "whole milk"), 1.0)
+        self.assertEqual(evals.text_similarity("", ""), 0.0)
+
+        expected = item("MILK", 100)
+        actual = item("BREAD", 100)
+        expected.normalized_name = ""
+        actual.normalized_name = ""
+        self.assertLess(evals.item_name_similarity(expected, actual), 0.45)
+
+    def test_item_matching_finds_global_maximum(self):
+        expected = [item("e0", 1), item("e1", 1)]
+        actual = [item("a0", 1), item("a1", 1)]
+        weights = {
+            ("e0", "a0"): 0.90,
+            ("e0", "a1"): 0.80,
+            ("e1", "a0"): 0.85,
+            ("e1", "a1"): 0.10,
+        }
+
+        with mock.patch.object(
+            evals,
+            "item_name_similarity",
+            side_effect=lambda left, right: weights[(left.raw_name, right.raw_name)],
+        ):
+            matches = evals.match_items(expected, actual)
+
+        self.assertEqual(set(matches), {(0, 1), (1, 0)})
 
     def test_payment_only_receipt_penalizes_invented_lines(self):
         metrics = evals.score(receipt([]), receipt([item("INVENTED", 300)]))
@@ -84,6 +149,19 @@ class EvalMetricTests(unittest.TestCase):
         self.assertEqual(metrics["itemRecall"], 0.0)
         self.assertEqual(metrics["itemPrecision"], 0.0)
         self.assertIsNone(metrics["itemNameSimilarity"])
+
+    def test_structured_failure_scores_labelled_nulls_as_effective_zero(self):
+        metrics = evals.failure_metrics(
+            receipt([item("MILK", None, quantity=None, unit_price=None)], total=None),
+            counts_against_quality=True,
+        )
+
+        self.assertEqual(metrics["transactionDateExact"], 0.0)
+        self.assertEqual(metrics["totalExact"], 0.0)
+        self.assertEqual(metrics["itemPriceExact"], 0.0)
+        self.assertEqual(metrics["itemUnitPriceExact"], 0.0)
+        self.assertEqual(metrics["itemQuantityExact"], 0.0)
+        self.assertEqual(metrics["quality"], 0.0)
 
     def test_summary_separates_infrastructure_failure_from_quality(self):
         valid = {
@@ -150,9 +228,11 @@ class EvalSafetyTests(unittest.TestCase):
             "model": "gpt-5.6-terra",
             "reasoningEffort": "medium",
             "status": "ok",
+            "actual": {},
         }
         payload = {
             "formatVersion": evals.FORMAT_VERSION,
+            "scoringVersion": evals.SCORING_VERSION,
             "evaluationFingerprint": "eval-fingerprint",
             "createdAt": "2026-08-12T00:00:00Z",
             "results": [row],
@@ -169,6 +249,43 @@ class EvalSafetyTests(unittest.TestCase):
 
         self.assertEqual(created_at, "2026-08-12T00:00:00Z")
         self.assertEqual(list(rows.values()), [row])
+
+    def test_build_output_ignores_resume_rows_outside_current_schedule(self):
+        active_key = ("case-fingerprint", "gpt-5.6-terra", "medium")
+        surplus_key = ("case-fingerprint", "gpt-5.6-terra", "high")
+
+        def row(effort):
+            return {
+                "caseFingerprint": "case-fingerprint",
+                "model": "gpt-5.6-terra",
+                "reasoningEffort": effort,
+                "status": "ok",
+                "schemaValidity": 1.0,
+                "quality": 90.0,
+                "latencyMs": 1,
+                "attempts": 1,
+                **{metric: 1.0 for metric in evals.SUMMARY_METRICS},
+            }
+
+        output = evals.build_output(
+            created_at="2026-08-12T00:00:00Z",
+            evaluation_fingerprint="eval",
+            contract_hash="contract",
+            cases=[SimpleNamespace(fingerprint="case-fingerprint")],
+            provider={"connected": True},
+            available_models=["gpt-5.6-terra"],
+            high_models=[],
+            skipped=[],
+            scheduled_keys={active_key},
+            results={active_key: row("medium"), surplus_key: row("high")},
+        )
+
+        self.assertEqual(1, len(output["results"]))
+        self.assertEqual("medium", output["results"][0]["reasoningEffort"])
+        self.assertEqual(1, output["matrix"]["completedCalls"])
+
+    def test_provider_stream_failure_is_not_counted_as_model_quality(self):
+        self.assertNotIn("provider_response", evals.MODEL_QUALITY_ERROR_CATEGORIES)
 
     def test_retry_is_bounded_and_only_for_transient_failure(self):
         calls = 0
@@ -209,11 +326,35 @@ class EvalSafetyTests(unittest.TestCase):
         self.assertIn(("gpt-5.6-terra", "high"), configurations)
         self.assertNotIn(("gpt-5.6-sol", "high"), configurations)
         self.assertEqual(len(schedule), 10)  # 2 cases * (2 models * 2 efforts + Terra high)
+        self.assertEqual(schedule[0][2], "low")
+        self.assertEqual(schedule[4][2], "medium")
         self.assertIn({
             "model": "gpt-5.6-sol",
             "reasoningEffort": "high",
             "reason": "not_in_account_catalog",
         }, skipped)
+
+    def test_schedule_interleaves_and_rotates_multiple_high_models(self):
+        cases = [SimpleNamespace(fingerprint=value) for value in ("a", "b", "c")]
+        schedule, _skipped = evals.build_schedule(
+            cases,
+            ["gpt-5.6-sol", "gpt-5.6-terra"],
+            ["gpt-5.6-sol", "gpt-5.6-terra"],
+        )
+
+        high = [
+            (case.fingerprint, model)
+            for case, model, effort in schedule
+            if effort == "high"
+        ]
+        self.assertEqual(high, [
+            ("a", "gpt-5.6-sol"),
+            ("a", "gpt-5.6-terra"),
+            ("b", "gpt-5.6-terra"),
+            ("b", "gpt-5.6-sol"),
+            ("c", "gpt-5.6-sol"),
+            ("c", "gpt-5.6-terra"),
+        ])
 
 
 if __name__ == "__main__":

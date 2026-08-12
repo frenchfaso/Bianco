@@ -266,6 +266,13 @@ def _apply_extraction(
     model: str | None,
     prompt_version: str,
 ) -> bool:
+    # Providers normally return a validated model, but this is the final trust
+    # boundary before replicated documents are written. Re-validate a dump so
+    # `model_construct()` or a faulty third-party provider cannot bypass the
+    # receipt contract and persist invalid categories, dates or currencies.
+    extraction = ReceiptExtraction.model_validate(
+        extraction.model_dump(by_alias=True)
+    )
     receipt = read_document(session, "receipts", job.receipt_id)
     if _protected_receipt(receipt):
         _complete_without_overwrite(session, job)
@@ -298,7 +305,8 @@ def _apply_extraction(
             "warnings": extraction.warnings,
             "ai": {
                 "providerId": provider_id,
-                "modelId": model,
+                # Effective model provenance is backend-only (AIExtractionJob).
+                "modelId": None,
                 "promptVersion": prompt_version,
                 "schemaVersion": extraction.schema_version,
             },
@@ -342,6 +350,7 @@ def _apply_extraction(
             timestamp=now,
         )
     job.status = "completed"
+    job.model_id = model
     job.next_attempt_at = None
     job.last_error_code = None
     job.last_error_message = None
@@ -394,7 +403,11 @@ async def process_next_ai_job(settings: Settings) -> bool:
                 raise ValueError("Receipt image reference does not match the queued upload")
             provider = select_provider(settings, session, job.provider_id)
             provider_id = provider.id
-            model = getattr(provider, "model", None)
+            model = getattr(
+                provider,
+                "receipt_model",
+                getattr(provider, "model", None),
+            )
             prompt_version = getattr(
                 provider,
                 "prompt_version",

@@ -1,4 +1,7 @@
 import asyncio
+import hashlib
+import hmac
+import json
 from typing import Annotated
 
 import httpx
@@ -9,7 +12,14 @@ from sqlalchemy.orm import Session
 
 from app.config import Settings, get_settings
 from app.database import get_session
+from app.insight_categories import CATEGORY_LABELS
 from app.models import AIExtractionJob
+from app.providers.common import (
+    BASE_INSTRUCTIONS,
+    INSIGHT_PROMPT,
+    INSIGHT_PROMPT_VERSION,
+    strict_json_schema,
+)
 from app.repositories.ai_jobs import (
     job_entry,
     release_jobs_for_provider,
@@ -28,24 +38,76 @@ from app.repositories.ai_providers import (
 )
 from app.schemas.ai import (
     GeneratedInsights,
+    GroundedInsightSelection,
     InsightSnapshot,
     ProviderConfigurationUpdate,
-    ProviderModelSelection,
 )
 from app.security import require_token
+from app.services.ai import build_provider, select_provider
 from app.services.ai_queue import (
     mark_receipt_for_reanalysis,
     mark_receipt_queued,
     wake_ai_worker,
 )
-from app.services.ai import build_provider, select_provider
-from app.services.openai_codex import get_openai_codex_service
 from app.services.events import broadcaster
+from app.services.openai_codex import get_openai_codex_service
+from app.services.grounded_insights import (
+    grounded_insight_renderer_fingerprint_material,
+)
 
 router = APIRouter(
     prefix="/api/ai", tags=["ai"], dependencies=[Depends(require_token)]
 )
 PROVIDER_STATUS_TIMEOUT_SECONDS = 8.0
+INSIGHT_PIPELINE_VERSION = "grounded-insight-selection-v1"
+
+
+def insight_configuration_fingerprint(
+    provider: object,
+    settings: Settings,
+) -> str:
+    """Return an opaque identifier for the effective insight pipeline.
+
+    Only the digest leaves the backend. Credentials are deliberately excluded;
+    model, endpoint and prompt details are inputs so their changes invalidate a
+    cached summary without exposing those values in the fingerprint itself.
+    """
+    material = {
+        "fingerprintVersion": 1,
+        # Manual transport/generation contract version. Bump when fixed request
+        # options or selection-to-render orchestration changes.
+        "insightPipelineVersion": INSIGHT_PIPELINE_VERSION,
+        "providerId": str(getattr(provider, "id", "")),
+        "endpoint": str(getattr(provider, "base_url", "")),
+        "model": str(
+            getattr(provider, "insight_model", getattr(provider, "model", ""))
+        ),
+        "reasoningEffort": str(
+            getattr(provider, "insight_reasoning_effort", "") or ""
+        ),
+        "promptVersion": INSIGHT_PROMPT_VERSION,
+        "baseInstructions": BASE_INSTRUCTIONS,
+        "prompt": INSIGHT_PROMPT,
+        "categoryLabels": CATEGORY_LABELS,
+        "outputSchema": GeneratedInsights.model_json_schema(mode="serialization"),
+        "selectionSchema": strict_json_schema(
+            GroundedInsightSelection.model_json_schema(mode="serialization")
+        ),
+        "renderer": grounded_insight_renderer_fingerprint_material(),
+    }
+    canonical = json.dumps(
+        material,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    # HMAC keeps low-entropy model identifiers and internal endpoints from
+    # being recoverable with a precomputed hash dictionary.
+    return hmac.new(
+        settings.secret_key.encode("utf-8"),
+        canonical,
+        hashlib.sha256,
+    ).hexdigest()
 
 
 def provider_entry(
@@ -69,18 +131,28 @@ def provider_entry(
         "requiresApiKey": definition.requires_api_key,
         "source": configuration.source,
         "active": active,
-        "selectedModel": configuration.model or None,
     }
     if definition.id == "openai":
-        connected = bool(chatgpt_status and chatgpt_status.get("connected"))
+        connection_state = (
+            chatgpt_status.get("connected") if chatgpt_status is not None else False
+        )
+        connected = connection_state is True
+        # A transient account-status failure must not make an already active
+        # pipeline look disconnected: that would erase a valid client cache.
+        connection_unknown = connection_state is None
         entry.update(
             {
-                "configured": configured and connected,
-                "chatgptConnected": connected,
+                "configured": configured and (connected or (active and connection_unknown)),
+                "chatgptConnected": None if connection_unknown else connected,
                 "planType": chatgpt_status.get("planType") if chatgpt_status else None,
                 "subscriptionOnly": True,
             }
         )
+    entry["insightConfigurationFingerprint"] = (
+        insight_configuration_fingerprint(provider, settings)
+        if entry["configured"]
+        else None
+    )
     return entry
 
 
@@ -91,7 +163,55 @@ async def _chatgpt_status(settings: Settings) -> dict[str, str | bool | None]:
             timeout=PROVIDER_STATUS_TIMEOUT_SECONDS,
         )
     except Exception:
-        return {"connected": False, "planType": None}
+        return {"connected": None, "planType": None, "status": "unknown"}
+
+
+def _default_openai_model(models: list[dict[str, object]]) -> str | None:
+    for model in models:
+        if model.get("isDefault") and isinstance(model.get("id"), str):
+            return str(model["id"])
+    for model in models:
+        if isinstance(model.get("id"), str):
+            return str(model["id"])
+    return None
+
+
+async def _ensure_openai_common_model(
+    settings: Settings,
+    session: Session,
+    *,
+    known_connected: bool = False,
+) -> tuple[ResolvedProviderConfiguration, list[dict[str, object]] | None]:
+    """Fill only missing roles from the legacy/common account default.
+
+    Explicit per-role environment models are resolved first and are never
+    overwritten. The persisted common value exists solely for compatibility
+    and for zero-configuration subscription login.
+    """
+    configuration = resolve_provider_configuration(session, settings, "openai")
+    if configuration.receipt_model and configuration.insight_model:
+        return configuration, None
+    service = get_openai_codex_service(settings)
+    if not known_connected:
+        status = await asyncio.wait_for(
+            service.account_status(),
+            timeout=PROVIDER_STATUS_TIMEOUT_SECONDS,
+        )
+        if not status.get("connected"):
+            return configuration, None
+    models = await asyncio.wait_for(
+        service.list_models(),
+        timeout=PROVIDER_STATUS_TIMEOUT_SECONDS,
+    )
+    default_model = _default_openai_model(models)
+    if default_model:
+        configuration = save_provider_model(
+            session,
+            settings,
+            "openai",
+            default_model,
+        )
+    return configuration, models
 
 
 async def _provider_available(configuration, settings: Settings) -> bool:
@@ -117,7 +237,8 @@ def _candidate_configuration(
     return ResolvedProviderConfiguration(
         definition=current.definition,
         base_url=update.base_url,
-        model=current.model,
+        receipt_model=current.receipt_model,
+        insight_model=current.insight_model,
         api_key=api_key,
         source="request",
     )
@@ -135,7 +256,7 @@ async def _provider_status_entry(
     )
     provider = build_provider(configuration, settings)
     configured = bool(getattr(provider, "configured", False)) and (
-        bool(chatgpt_status and chatgpt_status["connected"])
+        bool(chatgpt_status and chatgpt_status.get("connected") is True)
         if chatgpt_status is not None
         else True
     )
@@ -153,6 +274,12 @@ async def providers(
     settings: Annotated[Settings, Depends(get_settings)],
     session: Annotated[Session, Depends(get_session)],
 ) -> dict[str, list[dict[str, object]]]:
+    try:
+        await _ensure_openai_common_model(settings, session)
+    except Exception:
+        # Provider status remains available even when the optional catalog
+        # lookup is temporarily unavailable.
+        pass
     active_provider_id = resolve_active_provider_id(session, settings)
     configurations = resolve_all_provider_configurations(session, settings)
     entries = await asyncio.gather(*(
@@ -249,7 +376,10 @@ async def activate_provider(
             raise HTTPException(status_code=409, detail="Connect a ChatGPT subscription first")
         configuration = resolve_provider_configuration(session, settings, provider_id)
         if not await _provider_available(configuration, settings):
-            raise HTTPException(status_code=409, detail="Select an available Codex model first")
+            raise HTTPException(
+                status_code=409,
+                detail="The configured backend models are not available",
+            )
     try:
         configuration = activate_provider_configuration(
             session, settings, provider_id
@@ -286,15 +416,42 @@ async def start_openai_device_login(
 @router.get("/providers/openai/chatgpt/status")
 async def openai_device_login_status(
     settings: Annotated[Settings, Depends(get_settings)],
+    session: Annotated[Session, Depends(get_session)],
     login_id: Annotated[str, Query(alias="loginId", min_length=1, max_length=256)],
 ) -> dict[str, str | bool | None]:
     try:
-        return await asyncio.wait_for(
+        status = await asyncio.wait_for(
             get_openai_codex_service(settings).login_status(login_id),
             timeout=PROVIDER_STATUS_TIMEOUT_SECONDS,
         )
     except Exception as error:
         raise HTTPException(status_code=502, detail="ChatGPT login status is unavailable") from error
+    if status.get("connected"):
+        try:
+            configuration, models = await _ensure_openai_common_model(
+                settings,
+                session,
+                known_connected=True,
+            )
+            available_ids = (
+                {str(entry["id"]) for entry in models if isinstance(entry.get("id"), str)}
+                if models is not None
+                else set(await build_provider(configuration, settings).list_models())
+            )
+            if {
+                configuration.receipt_model,
+                configuration.insight_model,
+            }.issubset(available_ids):
+                activate_provider_configuration(session, settings, "openai")
+                release_jobs_for_provider(session, "openai")
+                wake_ai_worker()
+                await broadcaster.publish_ai_configuration_changed()
+        except Exception:
+            # Authorization succeeded. A missing or temporarily unavailable
+            # backend model is reported by the provider status separately and
+            # must not turn a successful OpenAI login into a false auth error.
+            pass
+    return status
 
 
 @router.delete("/providers/openai/chatgpt", status_code=204)
@@ -312,62 +469,6 @@ async def disconnect_openai_subscription(
     clear_openai_subscription_configuration(session)
     await broadcaster.publish_ai_configuration_changed()
     return Response(status_code=204)
-
-
-@router.get("/providers/openai/models")
-async def openai_models(
-    settings: Annotated[Settings, Depends(get_settings)],
-    session: Annotated[Session, Depends(get_session)],
-) -> dict[str, object]:
-    try:
-        models = await asyncio.wait_for(
-            get_openai_codex_service(settings).list_models(),
-            timeout=PROVIDER_STATUS_TIMEOUT_SECONDS,
-        )
-    except PermissionError as error:
-        raise HTTPException(status_code=409, detail=str(error)) from error
-    except Exception as error:
-        raise HTTPException(status_code=502, detail="Codex model catalog is unavailable") from error
-    configuration = resolve_provider_configuration(session, settings, "openai")
-    return {"models": models, "selectedModel": configuration.model or None}
-
-
-@router.put("/providers/openai/model")
-async def select_openai_model(
-    selection: ProviderModelSelection,
-    settings: Annotated[Settings, Depends(get_settings)],
-    session: Annotated[Session, Depends(get_session)],
-) -> dict[str, object]:
-    service = get_openai_codex_service(settings)
-    try:
-        status = await asyncio.wait_for(
-            service.account_status(),
-            timeout=PROVIDER_STATUS_TIMEOUT_SECONDS,
-        )
-        if not status["connected"]:
-            raise HTTPException(status_code=409, detail="Connect a ChatGPT subscription first")
-        models = await asyncio.wait_for(
-            service.list_models(),
-            timeout=PROVIDER_STATUS_TIMEOUT_SECONDS,
-        )
-    except HTTPException:
-        raise
-    except Exception as error:
-        raise HTTPException(status_code=502, detail="Codex model catalog is unavailable") from error
-    if selection.model not in {entry["id"] for entry in models}:
-        raise HTTPException(status_code=422, detail="Model is not available for this account")
-    configuration = save_provider_model(session, settings, "openai", selection.model)
-    activate_provider_configuration(session, settings, "openai")
-    release_jobs_for_provider(session, "openai")
-    wake_ai_worker()
-    await broadcaster.publish_ai_configuration_changed()
-    return provider_entry(
-        configuration,
-        True,
-        settings,
-        active=True,
-        chatgpt_status=status,
-    )
 
 
 @router.get("/jobs/{receipt_id}")
@@ -423,13 +524,18 @@ async def reanalyze_receipt(
 @router.post("/insights", response_model=GeneratedInsights, response_model_by_alias=True)
 async def generate_insights(
     snapshot: InsightSnapshot,
+    response: Response,
     settings: Annotated[Settings, Depends(get_settings)],
     session: Annotated[Session, Depends(get_session)],
     provider_id: str | None = None,
 ) -> GeneratedInsights:
     try:
         provider = select_provider(settings, session, provider_id)
-        return await provider.generate_insights(snapshot)
+        generated = await provider.generate_insights(snapshot)
+        response.headers["X-Bianco-AI-Configuration-Fingerprint"] = (
+            insight_configuration_fingerprint(provider, settings)
+        )
+        return generated
     except LookupError as error:
         raise HTTPException(status_code=503, detail=str(error)) from error
     except (httpx.HTTPError, KeyError, ValueError, ValidationError, asyncio.TimeoutError) as error:

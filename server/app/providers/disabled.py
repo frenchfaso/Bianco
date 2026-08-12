@@ -9,6 +9,8 @@ from app.schemas.ai import (
 class DisabledProvider:
     id = "none"
     label = "Disattivato"
+    receipt_model = ""
+    insight_model = ""
     model = ""
 
     async def health_check(self) -> bool:

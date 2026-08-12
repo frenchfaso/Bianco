@@ -1,0 +1,527 @@
+{
+  "formatVersion": 1,
+  "synthetic": true,
+  "description": "Public synthetic spending aggregates for Bianco insight evaluation.",
+  "cases": [
+    {
+      "id": "it-variazioni-categorie",
+      "snapshot": {
+        "locale": "it-IT",
+        "currency": "EUR",
+        "period": {
+          "start": "2026-06-01",
+          "end": "2026-06-30",
+          "previousStart": "2026-05-01",
+          "previousEnd": "2026-05-31"
+        },
+        "total": 18450,
+        "previousTotal": 14500,
+        "categories": [
+          {"id": "food_grocery", "total": 12100, "count": 6, "previousTotal": 10000, "difference": 2100, "changePercent": 21.0},
+          {"id": "home", "total": 6350, "count": 2, "previousTotal": 4500, "difference": 1850, "changePercent": 41.1111111111}
+        ],
+        "merchants": [
+          {"id": "Mercato Aurora", "total": 12100, "count": 6, "previousTotal": 10000, "difference": 2100, "changePercent": 21.0},
+          {"id": "Casa Chiara", "total": 6350, "count": 2, "previousTotal": 4500, "difference": 1850, "changePercent": 41.1111111111}
+        ],
+        "items": [
+          {"id": "Pasta del Borgo", "total": 1800, "quantity": 6, "frequency": 3},
+          {"id": "Detergente Limone", "total": 2100, "quantity": 2, "frequency": 2}
+        ],
+        "priceChanges": [
+          {"id": "Detergente Limone", "latest": 1200, "previousAverage": 1000, "difference": 200, "changePercent": 20.0}
+        ]
+      },
+      "expectedClaims": [
+        {"subject": "total", "metric": "current", "direction": "increase"},
+        {"subject": "category:food_grocery", "metric": "current", "direction": "increase"},
+        {"subject": "category:home", "metric": "current", "direction": "increase"},
+        {"subject": "merchant:Mercato Aurora", "metric": "current", "direction": "increase"},
+        {"subject": "merchant:Casa Chiara", "metric": "current", "direction": "increase"},
+        {"subject": "item:Pasta del Borgo", "metric": "current", "direction": "none"},
+        {"subject": "priceChange:Detergente Limone", "metric": "current", "direction": "increase"}
+      ]
+    },
+    {
+      "id": "en-spending-decrease",
+      "snapshot": {
+        "locale": "en-GB",
+        "currency": "EUR",
+        "period": {
+          "start": "2026-06-01",
+          "end": "2026-06-30",
+          "previousStart": "2026-05-01",
+          "previousEnd": "2026-05-31"
+        },
+        "total": 15675,
+        "previousTotal": 18200,
+        "categories": [
+          {"id": "food_grocery", "total": 8675, "count": 5, "previousTotal": 10000, "difference": -1325, "changePercent": -13.25},
+          {"id": "transport", "total": 7000, "count": 1, "previousTotal": 8200, "difference": -1200, "changePercent": -14.6341463415}
+        ],
+        "merchants": [
+          {"id": "Northstar Market", "total": 8675, "count": 5, "previousTotal": 10000, "difference": -1325, "changePercent": -13.25},
+          {"id": "Blue Line Transit", "total": 7000, "count": 1, "previousTotal": 8200, "difference": -1200, "changePercent": -14.6341463415}
+        ],
+        "items": [
+          {"id": "Oat Loaf", "total": 1200, "quantity": 4, "frequency": 4},
+          {"id": "Metro Pass", "total": 7000, "quantity": 1, "frequency": 1}
+        ],
+        "priceChanges": [
+          {"id": "Oat Loaf", "latest": 325, "previousAverage": 300, "difference": 25, "changePercent": 8.3333333333}
+        ]
+      },
+      "expectedClaims": [
+        {"subject": "total", "metric": "current", "direction": "decrease"},
+        {"subject": "category:food_grocery", "metric": "current", "direction": "decrease"},
+        {"subject": "category:transport", "metric": "current", "direction": "decrease"},
+        {"subject": "merchant:Northstar Market", "metric": "current", "direction": "decrease"},
+        {"subject": "merchant:Blue Line Transit", "metric": "current", "direction": "decrease"},
+        {"subject": "item:Oat Loaf", "metric": "current", "direction": "none"},
+        {"subject": "priceChange:Oat Loaf", "metric": "current", "direction": "increase"}
+      ]
+    },
+    {
+      "id": "de-kein-vergleichszeitraum",
+      "snapshot": {
+        "locale": "de-DE",
+        "currency": "EUR",
+        "period": {
+          "start": "2026-06-01",
+          "end": "2026-06-30",
+          "previousStart": "2026-05-01",
+          "previousEnd": "2026-05-31"
+        },
+        "total": 9900,
+        "previousTotal": 0,
+        "categories": [
+          {"id": "home", "total": 7000, "count": 2, "previousTotal": 0, "difference": 7000, "changePercent": null},
+          {"id": "health", "total": 2900, "count": 1, "previousTotal": 0, "difference": 2900, "changePercent": null}
+        ],
+        "merchants": [
+          {"id": "Morgenrot Markt", "total": 7000, "count": 2, "previousTotal": 0, "difference": 7000, "changePercent": null},
+          {"id": "Linden Apotheke", "total": 2900, "count": 1, "previousTotal": 0, "difference": 2900, "changePercent": null}
+        ],
+        "items": [
+          {"id": "Leinentuch", "total": 4400, "quantity": 2, "frequency": 2},
+          {"id": "Kraeutertee", "total": 900, "quantity": 3, "frequency": 1}
+        ],
+        "priceChanges": []
+      },
+      "expectedClaims": [
+        {"subject": "total", "metric": "current", "direction": "no_baseline"},
+        {"subject": "category:home", "metric": "current", "direction": "no_baseline"},
+        {"subject": "category:health", "metric": "current", "direction": "no_baseline"},
+        {"subject": "merchant:Morgenrot Markt", "metric": "current", "direction": "no_baseline"},
+        {"subject": "merchant:Linden Apotheke", "metric": "current", "direction": "no_baseline"},
+        {"subject": "item:Leinentuch", "metric": "current", "direction": "none"}
+      ]
+    },
+    {
+      "id": "es-cambio-de-distribucion",
+      "snapshot": {
+        "locale": "es-ES",
+        "currency": "EUR",
+        "period": {
+          "start": "2026-06-01",
+          "end": "2026-06-30",
+          "previousStart": "2026-05-01",
+          "previousEnd": "2026-05-31"
+        },
+        "total": 22100,
+        "previousTotal": 22100,
+        "categories": [
+          {"id": "food_grocery", "total": 14100, "count": 7, "previousTotal": 10000, "difference": 4100, "changePercent": 41.0},
+          {"id": "restaurant", "total": 8000, "count": 2, "previousTotal": 12100, "difference": -4100, "changePercent": -33.8842975207}
+        ],
+        "merchants": [
+          {"id": "Mercado Brisa", "total": 14100, "count": 7, "previousTotal": 10000, "difference": 4100, "changePercent": 41.0},
+          {"id": "Cafe Nube", "total": 8000, "count": 2, "previousTotal": 12100, "difference": -4100, "changePercent": -33.8842975207}
+        ],
+        "items": [
+          {"id": "Arroz Claro", "total": 2400, "quantity": 4, "frequency": 3},
+          {"id": "Menu del Dia", "total": 8000, "quantity": 2, "frequency": 2}
+        ],
+        "priceChanges": [
+          {"id": "Arroz Claro", "latest": 650, "previousAverage": 600, "difference": 50, "changePercent": 8.3333333333}
+        ]
+      },
+      "expectedClaims": [
+        {"subject": "total", "metric": "current", "direction": "stable"},
+        {"subject": "category:food_grocery", "metric": "current", "direction": "increase"},
+        {"subject": "category:restaurant", "metric": "current", "direction": "decrease"},
+        {"subject": "merchant:Mercado Brisa", "metric": "current", "direction": "increase"},
+        {"subject": "merchant:Cafe Nube", "metric": "current", "direction": "decrease"},
+        {"subject": "item:Arroz Claro", "metric": "current", "direction": "none"},
+        {"subject": "priceChange:Arroz Claro", "metric": "current", "direction": "increase"}
+      ]
+    },
+    {
+      "id": "fr-prix-et-marchands",
+      "snapshot": {
+        "locale": "fr-FR",
+        "currency": "EUR",
+        "period": {
+          "start": "2026-06-01",
+          "end": "2026-06-30",
+          "previousStart": "2026-05-01",
+          "previousEnd": "2026-05-31"
+        },
+        "total": 13240,
+        "previousTotal": 11800,
+        "categories": [
+          {"id": "transport", "total": 7240, "count": 3, "previousTotal": 6800, "difference": 440, "changePercent": 6.4705882353},
+          {"id": "personal", "total": 6000, "count": 2, "previousTotal": 5000, "difference": 1000, "changePercent": 20.0}
+        ],
+        "merchants": [
+          {"id": "Tram Azur", "total": 7240, "count": 3, "previousTotal": 6800, "difference": 440, "changePercent": 6.4705882353},
+          {"id": "Atelier Lune", "total": 6000, "count": 2, "previousTotal": 5000, "difference": 1000, "changePercent": 20.0}
+        ],
+        "items": [
+          {"id": "Carnet Mensuel", "total": 7240, "quantity": 2, "frequency": 2},
+          {"id": "Savon Doux", "total": 1200, "quantity": 4, "frequency": 2}
+        ],
+        "priceChanges": [
+          {"id": "Carnet Mensuel", "latest": 3820, "previousAverage": 3400, "difference": 420, "changePercent": 12.3529411765}
+        ]
+      },
+      "expectedClaims": [
+        {"subject": "total", "metric": "current", "direction": "increase"},
+        {"subject": "category:transport", "metric": "current", "direction": "increase"},
+        {"subject": "category:personal", "metric": "current", "direction": "increase"},
+        {"subject": "merchant:Tram Azur", "metric": "current", "direction": "increase"},
+        {"subject": "merchant:Atelier Lune", "metric": "current", "direction": "increase"},
+        {"subject": "item:Carnet Mensuel", "metric": "current", "direction": "none"},
+        {"subject": "priceChange:Carnet Mensuel", "metric": "current", "direction": "increase"}
+      ]
+    },
+    {
+      "id": "it-nessun-periodo-precedente",
+      "snapshot": {
+        "locale": "it-IT",
+        "currency": "EUR",
+        "period": {"start": "2026-07-01", "end": "2026-07-31", "previousStart": "2026-06-01", "previousEnd": "2026-06-30"},
+        "total": 7600,
+        "previousTotal": 0,
+        "categories": [
+          {"id": "health", "total": 4600, "count": 2, "previousTotal": 0, "difference": 4600, "changePercent": null},
+          {"id": "personal", "total": 3000, "count": 1, "previousTotal": 0, "difference": 3000, "changePercent": null}
+        ],
+        "merchants": [
+          {"id": "Farmacia Cedro", "total": 4600, "count": 2, "previousTotal": 0, "difference": 4600, "changePercent": null},
+          {"id": "Bottega Iris", "total": 3000, "count": 1, "previousTotal": 0, "difference": 3000, "changePercent": null}
+        ],
+        "items": [
+          {"id": "Tisana Quieta", "total": 1800, "quantity": 3, "frequency": 2},
+          {"id": "Sapone Viola", "total": 1200, "quantity": 2, "frequency": 1}
+        ],
+        "priceChanges": []
+      },
+      "expectedClaims": [
+        {"subject": "total", "metric": "current", "direction": "no_baseline"},
+        {"subject": "category:health", "metric": "current", "direction": "no_baseline"},
+        {"subject": "category:personal", "metric": "current", "direction": "no_baseline"},
+        {"subject": "merchant:Farmacia Cedro", "metric": "current", "direction": "no_baseline"},
+        {"subject": "merchant:Bottega Iris", "metric": "current", "direction": "no_baseline"},
+        {"subject": "item:Tisana Quieta", "metric": "current", "direction": "none"}
+      ]
+    },
+    {
+      "id": "it-calo-e-prezzo",
+      "snapshot": {
+        "locale": "it-IT",
+        "currency": "EUR",
+        "period": {"start": "2026-08-01", "end": "2026-08-31", "previousStart": "2026-07-01", "previousEnd": "2026-07-31"},
+        "total": 12800,
+        "previousTotal": 14100,
+        "categories": [
+          {"id": "restaurant", "total": 7800, "count": 3, "previousTotal": 9000, "difference": -1200, "changePercent": -13.3333333333},
+          {"id": "transport", "total": 5000, "count": 2, "previousTotal": 5100, "difference": -100, "changePercent": -1.9607843137}
+        ],
+        "merchants": [
+          {"id": "Tavola Ginestra", "total": 7800, "count": 3, "previousTotal": 9000, "difference": -1200, "changePercent": -13.3333333333},
+          {"id": "Bus Corallo", "total": 5000, "count": 2, "previousTotal": 5100, "difference": -100, "changePercent": -1.9607843137}
+        ],
+        "items": [
+          {"id": "Pranzo Breve", "total": 7800, "quantity": 6, "frequency": 3},
+          {"id": "Corsa Urbana", "total": 5000, "quantity": 10, "frequency": 2}
+        ],
+        "priceChanges": [
+          {"id": "Pranzo Breve", "latest": 1300, "previousAverage": 1500, "difference": -200, "changePercent": -13.3333333333}
+        ]
+      },
+      "expectedClaims": [
+        {"subject": "total", "metric": "current", "direction": "decrease"},
+        {"subject": "category:restaurant", "metric": "current", "direction": "decrease"},
+        {"subject": "category:transport", "metric": "current", "direction": "decrease"},
+        {"subject": "merchant:Tavola Ginestra", "metric": "current", "direction": "decrease"},
+        {"subject": "merchant:Bus Corallo", "metric": "current", "direction": "decrease"},
+        {"subject": "item:Pranzo Breve", "metric": "current", "direction": "none"},
+        {"subject": "priceChange:Pranzo Breve", "metric": "current", "direction": "decrease"}
+      ]
+    },
+    {
+      "id": "en-no-previous-period",
+      "snapshot": {
+        "locale": "en-GB",
+        "currency": "EUR",
+        "period": {"start": "2026-07-01", "end": "2026-07-31", "previousStart": "2026-06-01", "previousEnd": "2026-06-30"},
+        "total": 8700,
+        "previousTotal": 0,
+        "categories": [
+          {"id": "home", "total": 5400, "count": 2, "previousTotal": 0, "difference": 5400, "changePercent": null},
+          {"id": "entertainment", "total": 3300, "count": 1, "previousTotal": 0, "difference": 3300, "changePercent": null}
+        ],
+        "merchants": [
+          {"id": "Willow Workshop", "total": 5400, "count": 2, "previousTotal": 0, "difference": 5400, "changePercent": null},
+          {"id": "Silver Screen Room", "total": 3300, "count": 1, "previousTotal": 0, "difference": 3300, "changePercent": null}
+        ],
+        "items": [
+          {"id": "Cotton Towel", "total": 2400, "quantity": 4, "frequency": 2},
+          {"id": "Evening Ticket", "total": 3300, "quantity": 3, "frequency": 1}
+        ],
+        "priceChanges": []
+      },
+      "expectedClaims": [
+        {"subject": "total", "metric": "current", "direction": "no_baseline"},
+        {"subject": "category:home", "metric": "current", "direction": "no_baseline"},
+        {"subject": "category:entertainment", "metric": "current", "direction": "no_baseline"},
+        {"subject": "merchant:Willow Workshop", "metric": "current", "direction": "no_baseline"},
+        {"subject": "merchant:Silver Screen Room", "metric": "current", "direction": "no_baseline"},
+        {"subject": "item:Cotton Towel", "metric": "current", "direction": "none"}
+      ]
+    },
+    {
+      "id": "en-stable-total-new-mix",
+      "snapshot": {
+        "locale": "en-GB",
+        "currency": "EUR",
+        "period": {"start": "2026-08-01", "end": "2026-08-31", "previousStart": "2026-07-01", "previousEnd": "2026-07-31"},
+        "total": 19900,
+        "previousTotal": 19900,
+        "categories": [
+          {"id": "food_grocery", "total": 11900, "count": 6, "previousTotal": 14400, "difference": -2500, "changePercent": -17.3611111111},
+          {"id": "entertainment", "total": 8000, "count": 2, "previousTotal": 5500, "difference": 2500, "changePercent": 45.4545454545}
+        ],
+        "merchants": [
+          {"id": "Pinecone Grocer", "total": 11900, "count": 6, "previousTotal": 14400, "difference": -2500, "changePercent": -17.3611111111},
+          {"id": "Harbour Stage", "total": 8000, "count": 2, "previousTotal": 5500, "difference": 2500, "changePercent": 45.4545454545}
+        ],
+        "items": [
+          {"id": "Rye Roll", "total": 1500, "quantity": 5, "frequency": 3},
+          {"id": "Theatre Token", "total": 8000, "quantity": 4, "frequency": 2}
+        ],
+        "priceChanges": [
+          {"id": "Theatre Token", "latest": 2200, "previousAverage": 2000, "difference": 200, "changePercent": 10.0}
+        ]
+      },
+      "expectedClaims": [
+        {"subject": "total", "metric": "current", "direction": "stable"},
+        {"subject": "category:food_grocery", "metric": "current", "direction": "decrease"},
+        {"subject": "category:entertainment", "metric": "current", "direction": "increase"},
+        {"subject": "merchant:Pinecone Grocer", "metric": "current", "direction": "decrease"},
+        {"subject": "merchant:Harbour Stage", "metric": "current", "direction": "increase"},
+        {"subject": "item:Rye Roll", "metric": "current", "direction": "none"},
+        {"subject": "priceChange:Theatre Token", "metric": "current", "direction": "increase"}
+      ]
+    },
+    {
+      "id": "de-anstieg-nach-kategorie",
+      "snapshot": {
+        "locale": "de-DE",
+        "currency": "EUR",
+        "period": {"start": "2026-07-01", "end": "2026-07-31", "previousStart": "2026-06-01", "previousEnd": "2026-06-30"},
+        "total": 17300,
+        "previousTotal": 14900,
+        "categories": [
+          {"id": "food_grocery", "total": 10300, "count": 5, "previousTotal": 9300, "difference": 1000, "changePercent": 10.752688172},
+          {"id": "home", "total": 7000, "count": 2, "previousTotal": 5600, "difference": 1400, "changePercent": 25.0}
+        ],
+        "merchants": [
+          {"id": "Wiesenladen", "total": 10300, "count": 5, "previousTotal": 9300, "difference": 1000, "changePercent": 10.752688172},
+          {"id": "Kupfer Haus", "total": 7000, "count": 2, "previousTotal": 5600, "difference": 1400, "changePercent": 25.0}
+        ],
+        "items": [
+          {"id": "Dinkelbrot", "total": 2100, "quantity": 6, "frequency": 3},
+          {"id": "Holzkorb", "total": 4200, "quantity": 2, "frequency": 2}
+        ],
+        "priceChanges": [
+          {"id": "Dinkelbrot", "latest": 375, "previousAverage": 350, "difference": 25, "changePercent": 7.1428571429}
+        ]
+      },
+      "expectedClaims": [
+        {"subject": "total", "metric": "current", "direction": "increase"},
+        {"subject": "category:food_grocery", "metric": "current", "direction": "increase"},
+        {"subject": "category:home", "metric": "current", "direction": "increase"},
+        {"subject": "merchant:Wiesenladen", "metric": "current", "direction": "increase"},
+        {"subject": "merchant:Kupfer Haus", "metric": "current", "direction": "increase"},
+        {"subject": "item:Dinkelbrot", "metric": "current", "direction": "none"},
+        {"subject": "priceChange:Dinkelbrot", "metric": "current", "direction": "increase"}
+      ]
+    },
+    {
+      "id": "de-stabil-mit-preisanderung",
+      "snapshot": {
+        "locale": "de-DE",
+        "currency": "EUR",
+        "period": {"start": "2026-08-01", "end": "2026-08-31", "previousStart": "2026-07-01", "previousEnd": "2026-07-31"},
+        "total": 11600,
+        "previousTotal": 11600,
+        "categories": [
+          {"id": "transport", "total": 6600, "count": 3, "previousTotal": 7600, "difference": -1000, "changePercent": -13.1578947368},
+          {"id": "personal", "total": 5000, "count": 2, "previousTotal": 4000, "difference": 1000, "changePercent": 25.0}
+        ],
+        "merchants": [
+          {"id": "Elbe Mobil", "total": 6600, "count": 3, "previousTotal": 7600, "difference": -1000, "changePercent": -13.1578947368},
+          {"id": "Stern Atelier", "total": 5000, "count": 2, "previousTotal": 4000, "difference": 1000, "changePercent": 25.0}
+        ],
+        "items": [
+          {"id": "Wochenkarte", "total": 6600, "quantity": 3, "frequency": 3},
+          {"id": "Wollseife", "total": 1500, "quantity": 3, "frequency": 2}
+        ],
+        "priceChanges": [
+          {"id": "Wochenkarte", "latest": 2400, "previousAverage": 2200, "difference": 200, "changePercent": 9.0909090909}
+        ]
+      },
+      "expectedClaims": [
+        {"subject": "total", "metric": "current", "direction": "stable"},
+        {"subject": "category:transport", "metric": "current", "direction": "decrease"},
+        {"subject": "category:personal", "metric": "current", "direction": "increase"},
+        {"subject": "merchant:Elbe Mobil", "metric": "current", "direction": "decrease"},
+        {"subject": "merchant:Stern Atelier", "metric": "current", "direction": "increase"},
+        {"subject": "item:Wochenkarte", "metric": "current", "direction": "none"},
+        {"subject": "priceChange:Wochenkarte", "metric": "current", "direction": "increase"}
+      ]
+    },
+    {
+      "id": "es-sin-periodo-anterior",
+      "snapshot": {
+        "locale": "es-ES",
+        "currency": "EUR",
+        "period": {"start": "2026-07-01", "end": "2026-07-31", "previousStart": "2026-06-01", "previousEnd": "2026-06-30"},
+        "total": 6800,
+        "previousTotal": 0,
+        "categories": [
+          {"id": "transport", "total": 3800, "count": 2, "previousTotal": 0, "difference": 3800, "changePercent": null},
+          {"id": "health", "total": 3000, "count": 1, "previousTotal": 0, "difference": 3000, "changePercent": null}
+        ],
+        "merchants": [
+          {"id": "Ruta Coral", "total": 3800, "count": 2, "previousTotal": 0, "difference": 3800, "changePercent": null},
+          {"id": "Herbolario Lago", "total": 3000, "count": 1, "previousTotal": 0, "difference": 3000, "changePercent": null}
+        ],
+        "items": [
+          {"id": "Bono Urbano", "total": 3800, "quantity": 2, "frequency": 2},
+          {"id": "Infusion Serena", "total": 1200, "quantity": 3, "frequency": 1}
+        ],
+        "priceChanges": []
+      },
+      "expectedClaims": [
+        {"subject": "total", "metric": "current", "direction": "no_baseline"},
+        {"subject": "category:transport", "metric": "current", "direction": "no_baseline"},
+        {"subject": "category:health", "metric": "current", "direction": "no_baseline"},
+        {"subject": "merchant:Ruta Coral", "metric": "current", "direction": "no_baseline"},
+        {"subject": "merchant:Herbolario Lago", "metric": "current", "direction": "no_baseline"},
+        {"subject": "item:Bono Urbano", "metric": "current", "direction": "none"}
+      ]
+    },
+    {
+      "id": "es-descenso-y-precio",
+      "snapshot": {
+        "locale": "es-ES",
+        "currency": "EUR",
+        "period": {"start": "2026-08-01", "end": "2026-08-31", "previousStart": "2026-07-01", "previousEnd": "2026-07-31"},
+        "total": 14700,
+        "previousTotal": 16800,
+        "categories": [
+          {"id": "restaurant", "total": 8700, "count": 3, "previousTotal": 10800, "difference": -2100, "changePercent": -19.4444444444},
+          {"id": "personal", "total": 6000, "count": 2, "previousTotal": 6000, "difference": 0, "changePercent": 0.0}
+        ],
+        "merchants": [
+          {"id": "Mesa Canela", "total": 8700, "count": 3, "previousTotal": 10800, "difference": -2100, "changePercent": -19.4444444444},
+          {"id": "Taller Violeta", "total": 6000, "count": 2, "previousTotal": 6000, "difference": 0, "changePercent": 0.0}
+        ],
+        "items": [
+          {"id": "Comida Ligera", "total": 8700, "quantity": 6, "frequency": 3},
+          {"id": "Jabon Floral", "total": 1800, "quantity": 3, "frequency": 2}
+        ],
+        "priceChanges": [
+          {"id": "Comida Ligera", "latest": 1450, "previousAverage": 1800, "difference": -350, "changePercent": -19.4444444444}
+        ]
+      },
+      "expectedClaims": [
+        {"subject": "total", "metric": "current", "direction": "decrease"},
+        {"subject": "category:restaurant", "metric": "current", "direction": "decrease"},
+        {"subject": "category:personal", "metric": "current", "direction": "stable"},
+        {"subject": "merchant:Mesa Canela", "metric": "current", "direction": "decrease"},
+        {"subject": "merchant:Taller Violeta", "metric": "current", "direction": "stable"},
+        {"subject": "item:Comida Ligera", "metric": "current", "direction": "none"},
+        {"subject": "priceChange:Comida Ligera", "metric": "current", "direction": "decrease"}
+      ]
+    },
+    {
+      "id": "fr-sans-periode-precedente",
+      "snapshot": {
+        "locale": "fr-FR",
+        "currency": "EUR",
+        "period": {"start": "2026-07-01", "end": "2026-07-31", "previousStart": "2026-06-01", "previousEnd": "2026-06-30"},
+        "total": 8100,
+        "previousTotal": 0,
+        "categories": [
+          {"id": "food_grocery", "total": 5100, "count": 3, "previousTotal": 0, "difference": 5100, "changePercent": null},
+          {"id": "home", "total": 3000, "count": 1, "previousTotal": 0, "difference": 3000, "changePercent": null}
+        ],
+        "merchants": [
+          {"id": "Epicerie Aube", "total": 5100, "count": 3, "previousTotal": 0, "difference": 5100, "changePercent": null},
+          {"id": "Maison Sureau", "total": 3000, "count": 1, "previousTotal": 0, "difference": 3000, "changePercent": null}
+        ],
+        "items": [
+          {"id": "Pain Prairie", "total": 1500, "quantity": 5, "frequency": 3},
+          {"id": "Torchon Lin", "total": 1800, "quantity": 2, "frequency": 1}
+        ],
+        "priceChanges": []
+      },
+      "expectedClaims": [
+        {"subject": "total", "metric": "current", "direction": "no_baseline"},
+        {"subject": "category:food_grocery", "metric": "current", "direction": "no_baseline"},
+        {"subject": "category:home", "metric": "current", "direction": "no_baseline"},
+        {"subject": "merchant:Epicerie Aube", "metric": "current", "direction": "no_baseline"},
+        {"subject": "merchant:Maison Sureau", "metric": "current", "direction": "no_baseline"},
+        {"subject": "item:Pain Prairie", "metric": "current", "direction": "none"}
+      ]
+    },
+    {
+      "id": "fr-baisse-et-repartition",
+      "snapshot": {
+        "locale": "fr-FR",
+        "currency": "EUR",
+        "period": {"start": "2026-08-01", "end": "2026-08-31", "previousStart": "2026-07-01", "previousEnd": "2026-07-31"},
+        "total": 17500,
+        "previousTotal": 20000,
+        "categories": [
+          {"id": "food_grocery", "total": 10500, "count": 5, "previousTotal": 13000, "difference": -2500, "changePercent": -19.2307692308},
+          {"id": "entertainment", "total": 7000, "count": 2, "previousTotal": 7000, "difference": 0, "changePercent": 0.0}
+        ],
+        "merchants": [
+          {"id": "Marche Luciole", "total": 10500, "count": 5, "previousTotal": 13000, "difference": -2500, "changePercent": -19.2307692308},
+          {"id": "Scene Mistral", "total": 7000, "count": 2, "previousTotal": 7000, "difference": 0, "changePercent": 0.0}
+        ],
+        "items": [
+          {"id": "Pomme Claire", "total": 2100, "quantity": 7, "frequency": 3},
+          {"id": "Billet Soir", "total": 7000, "quantity": 4, "frequency": 2}
+        ],
+        "priceChanges": [
+          {"id": "Pomme Claire", "latest": 320, "previousAverage": 300, "difference": 20, "changePercent": 6.6666666667}
+        ]
+      },
+      "expectedClaims": [
+        {"subject": "total", "metric": "current", "direction": "decrease"},
+        {"subject": "category:food_grocery", "metric": "current", "direction": "decrease"},
+        {"subject": "category:entertainment", "metric": "current", "direction": "stable"},
+        {"subject": "merchant:Marche Luciole", "metric": "current", "direction": "decrease"},
+        {"subject": "merchant:Scene Mistral", "metric": "current", "direction": "stable"},
+        {"subject": "item:Pomme Claire", "metric": "current", "direction": "none"},
+        {"subject": "priceChange:Pomme Claire", "metric": "current", "direction": "increase"}
+      ]
+    }
+  ]
+}

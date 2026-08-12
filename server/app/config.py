@@ -5,6 +5,8 @@ from typing import Literal
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+ReasoningEffort = Literal["none", "low", "medium", "high", "xhigh", "max"]
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
@@ -68,9 +70,19 @@ class Settings(BaseSettings):
     openai_request_timeout_seconds: int = Field(
         600, ge=30, le=1800, alias="BIANCO_OPENAI_REQUEST_TIMEOUT_SECONDS"
     )
-    openai_reasoning_effort: Literal[
-        "none", "low", "medium", "high", "xhigh", "max"
-    ] = Field("medium", alias="BIANCO_OPENAI_REASONING_EFFORT")
+    openai_receipt_model: str = Field("", alias="BIANCO_OPENAI_RECEIPT_MODEL")
+    openai_insight_model: str = Field("", alias="BIANCO_OPENAI_INSIGHT_MODEL")
+    # Deprecated common fallback. Keep it for existing deployments while the
+    # role-specific settings remain unset.
+    openai_reasoning_effort: ReasoningEffort = Field(
+        "medium", alias="BIANCO_OPENAI_REASONING_EFFORT"
+    )
+    openai_receipt_reasoning_effort: ReasoningEffort | None = Field(
+        None, alias="BIANCO_OPENAI_RECEIPT_REASONING_EFFORT"
+    )
+    openai_insight_reasoning_effort: ReasoningEffort | None = Field(
+        None, alias="BIANCO_OPENAI_INSIGHT_REASONING_EFFORT"
+    )
 
     openai_compatible_base_url: str = Field(
         "", alias="OPENAI_COMPATIBLE_BASE_URL"
@@ -79,11 +91,32 @@ class Settings(BaseSettings):
         "", alias="OPENAI_COMPATIBLE_API_KEY"
     )
     openai_compatible_model: str = Field("", alias="OPENAI_COMPATIBLE_MODEL")
+    openai_compatible_insight_model: str = Field(
+        "", alias="OPENAI_COMPATIBLE_INSIGHT_MODEL"
+    )
 
     ollama_base_url: str = Field("", alias="OLLAMA_BASE_URL")
     ollama_model: str = Field("", alias="OLLAMA_MODEL")
+    ollama_insight_model: str = Field("", alias="OLLAMA_INSIGHT_MODEL")
     ollama_ocr_model: str = Field("", alias="OLLAMA_OCR_MODEL")
     ollama_audit_model: str = Field("", alias="OLLAMA_AUDIT_MODEL")
+
+    @field_validator(
+        "openai_receipt_reasoning_effort",
+        "openai_insight_reasoning_effort",
+        mode="before",
+    )
+    @classmethod
+    def empty_reasoning_effort_uses_legacy_fallback(cls, value):
+        return None if value == "" else value
+
+    @property
+    def effective_openai_receipt_reasoning_effort(self) -> ReasoningEffort:
+        return self.openai_receipt_reasoning_effort or self.openai_reasoning_effort
+
+    @property
+    def effective_openai_insight_reasoning_effort(self) -> ReasoningEffort:
+        return self.openai_insight_reasoning_effort or self.openai_reasoning_effort
 
     @field_validator("sync_token", "secret_key")
     @classmethod

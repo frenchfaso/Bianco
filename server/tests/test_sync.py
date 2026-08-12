@@ -189,3 +189,48 @@ def test_receipt_item_sync_schema_is_enforced(client, auth_headers):
         json={"rows": [{"assumedMasterState": None, "newDocumentState": malformed}]},
     )
     assert response.status_code == 422
+
+
+def test_sync_preserves_legacy_category_ids_on_push_and_edit(client, auth_headers):
+    original = {**receipt("legacy-receipt"), "categoryId": "legacy_groceries"}
+    assert push(client, auth_headers, [{
+        "assumedMasterState": None,
+        "newDocumentState": original,
+    }]).status_code == 200
+
+    edited = {
+        **original,
+        "categoryId": "legacy_household",
+        "updatedAt": "2026-07-14T11:00:00Z",
+        "updatedByDevice": "device-b",
+    }
+    response = push(client, auth_headers, [{
+        "assumedMasterState": original,
+        "newDocumentState": edited,
+    }])
+    assert response.status_code == 200
+    assert response.json() == {"conflicts": []}
+
+    item = {
+        "id": "legacy-item",
+        "receiptId": "legacy-receipt",
+        "rawName": "OLD ITEM",
+        "normalizedName": "Old item",
+        "quantity": 1,
+        "unitPriceMinor": 100,
+        "totalPriceMinor": 100,
+        "categoryId": "legacy_misc",
+        "confidence": 1.0,
+        "position": 0,
+        "userEdited": True,
+        "updatedAt": "2026-07-14T11:00:00Z",
+        "updatedByDevice": "device-b",
+        "_deleted": False,
+    }
+    response = client.post(
+        "/api/sync/receipt_items/push",
+        headers=auth_headers,
+        json={"rows": [{"assumedMasterState": None, "newDocumentState": item}]},
+    )
+    assert response.status_code == 200
+    assert response.json() == {"conflicts": []}

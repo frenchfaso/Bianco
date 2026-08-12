@@ -29,6 +29,9 @@ class AIExtractionJob(Base):
     receipt_id: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
     image_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     provider_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # Internal audit provenance. Deliberately excluded from replicated receipt
+    # documents and from job_entry() responses.
+    model_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     locale: Mapped[str] = mapped_column(String(16), nullable=False)
     currency: Mapped[str] = mapped_column(String(3), nullable=False)
     status: Mapped[str] = mapped_column(String(32), nullable=False)

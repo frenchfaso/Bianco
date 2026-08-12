@@ -11,6 +11,9 @@ from app.schemas.ai import (
 class AIProvider(Protocol):
     id: str
     label: str
+    receipt_model: str
+    insight_model: str
+    # Backward-compatible receipt-model alias.
     model: str
 
     async def health_check(self) -> bool: ...

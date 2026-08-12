@@ -213,6 +213,28 @@ def test_aggregate_update_tombstones_items_omitted_by_the_client(
     assert response.json()["revision"] >= removed_row.server_sequence
 
 
+def test_aggregate_edit_accepts_legacy_category_ids(client, auth_headers):
+    push_document(client, auth_headers, "receipts", receipt("receipt-1"))
+    current = client.get(
+        "/api/sync/receipt-aggregates/receipt-1", headers=auth_headers
+    ).json()
+    update = aggregate_update(
+        current["revision"],
+        [editable_item(None, categoryId="legacy_household")],
+    )
+    update["receipt"] = editable_header(categoryId="legacy_mixed")
+
+    response = client.put(
+        "/api/sync/receipt-aggregates/receipt-1",
+        headers=auth_headers,
+        json=update,
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["receipt"]["categoryId"] == "legacy_mixed"
+    assert response.json()["items"][0]["categoryId"] == "legacy_household"
+
+
 def test_aggregate_rejects_invalid_body_and_cross_receipt_item_reference(
     client, auth_headers
 ):

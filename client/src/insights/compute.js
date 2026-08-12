@@ -2,6 +2,10 @@ const DAY_MS = 24 * 60 * 60 * 1000
 const WEEK_MS = 7 * DAY_MS
 const AUTHORITATIVE_STATUSES = new Set(['confirmed', 'manual'])
 const CATEGORY_RECONCILIATION_TOLERANCE_MINOR = 2
+const INSIGHT_COLLECTION_LIMIT = 100
+const KNOWN_CATEGORY_IDS = new Set([
+  'food_grocery', 'restaurant', 'transport', 'home', 'health', 'personal', 'entertainment', 'other'
+])
 
 function dateOnlyValue(value) {
   const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value || '')
@@ -26,6 +30,14 @@ function stableSortByTotal(entries) {
 
 function isAuthoritativeReceipt(receipt) {
   return AUTHORITATIVE_STATUSES.has(receipt.status)
+}
+
+function normalizedCurrency(value) {
+  return String(value || '').trim().toUpperCase()
+}
+
+function normalizedCategoryId(value) {
+  return KNOWN_CATEGORY_IDS.has(value) ? value : 'other'
 }
 
 export function spendingSeries(receipts, granularity, now = new Date(), bucketCount = 12) {
@@ -109,11 +121,11 @@ function aggregateCategories(receipts, items) {
     for (const item of itemsByReceipt.get(receipt.id) || []) {
       const amount = Number(item.totalPriceMinor)
       if (!Number.isFinite(amount) || amount <= 0) continue
-      const categoryId = item.categoryId || 'other'
+      const categoryId = normalizedCategoryId(item.categoryId)
       categoryTotals.set(categoryId, (categoryTotals.get(categoryId) || 0) + amount)
     }
     if (!categoryTotals.size) {
-      addCategoryTotal(totals, receipt.categoryId || 'other', receipt.totalMinor || 0)
+      addCategoryTotal(totals, normalizedCategoryId(receipt.categoryId), receipt.totalMinor || 0)
       continue
     }
 
@@ -176,17 +188,18 @@ function mergedComparison(currentMap, previousMap) {
 function comparisonIdentity(item) {
   const normalized = (item.normalizedName || '').trim().toLocaleLowerCase()
   const raw = (item.rawName || '').trim().toLocaleLowerCase().replace(/\s+/g, ' ')
-  if (!normalized || !raw || !item.categoryId) return null
+  if (!normalized || !raw) return null
   const quantity = Number(item.quantity)
   const unitPrice = Number(item.unitPriceMinor)
   const totalPrice = Number(item.totalPriceMinor)
   if (!Number.isFinite(quantity) || quantity <= 0 || !Number.isFinite(unitPrice) || unitPrice <= 0) return null
   if (!Number.isFinite(totalPrice) || Math.abs(totalPrice - Math.round(quantity * unitPrice)) > 2) return null
-  return `${normalized}\u0000${raw}\u0000${item.categoryId}\u0000${quantity}`
+  return `${normalized}\u0000${raw}\u0000${normalizedCategoryId(item.categoryId)}\u0000${quantity}`
 }
 
 function productInsights(items, receipts, currentIds) {
   const current = new Map()
+  const currentReceiptIds = new Map()
   const prices = new Map()
   const receiptById = new Map(receipts.map((receipt) => [receipt.id, receipt]))
   for (const item of items) {
@@ -196,7 +209,10 @@ function productInsights(items, receipts, currentIds) {
       const value = current.get(name) || { id: name, total: 0, quantity: 0, frequency: 0 }
       value.total += item.totalPriceMinor || 0
       value.quantity += item.quantity ?? 1
-      value.frequency += 1
+      const receiptIds = currentReceiptIds.get(name) || new Set()
+      receiptIds.add(item.receiptId)
+      currentReceiptIds.set(name, receiptIds)
+      value.frequency = receiptIds.size
       current.set(name, value)
     }
     const identity = comparisonIdentity(item)
@@ -262,10 +278,13 @@ export function computeInsights(receipts, items, options = {}) {
   const now = options.now || new Date()
   const minimumMinor = options.minimumMinor ?? 1000
   const minimumPercent = options.minimumPercent ?? 20
+  const defaultCurrency = normalizedCurrency(options.defaultCurrency || 'EUR')
   const period = currentPeriod(now)
-  const usable = receipts.filter((receipt) =>
+  const candidates = receipts.filter((receipt) =>
     isAuthoritativeReceipt(receipt) && receipt.totalMinor != null && receipt.transactionDate
   )
+  const usable = candidates.filter((receipt) => normalizedCurrency(receipt.currency) === defaultCurrency)
+  const excludedCurrencyCount = candidates.length - usable.length
   const usableIds = new Set(usable.map((receipt) => receipt.id))
   const usableItems = items.filter((item) => usableIds.has(item.receiptId))
   const current = usable.filter((receipt) => inRange(receipt, period.start, period.end))
@@ -292,6 +311,7 @@ export function computeInsights(receipts, items, options = {}) {
     },
     total,
     previousTotal,
+    excludedCurrencyCount,
     difference: totalDifference,
     changePercent: percentChange(total, previousTotal),
     categories,
@@ -313,9 +333,11 @@ export function insightSnapshot(insights) {
     period: insights.period,
     total: insights.total,
     previousTotal: insights.previousTotal,
-    categories: insights.categories,
-    merchants: insights.merchants,
-    items: insights.products,
-    priceChanges: insights.priceChanges
+    categories: insights.categories.slice(0, INSIGHT_COLLECTION_LIMIT),
+    merchants: insights.merchants
+      .filter((entry) => entry.id !== UNKNOWN_MERCHANT_ID)
+      .slice(0, INSIGHT_COLLECTION_LIMIT),
+    items: insights.products.slice(0, INSIGHT_COLLECTION_LIMIT),
+    priceChanges: insights.priceChanges.slice(0, INSIGHT_COLLECTION_LIMIT)
   }
 }

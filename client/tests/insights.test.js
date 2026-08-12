@@ -1,9 +1,14 @@
 import { describe, expect, it } from 'vitest'
-import { computeInsights, spendingSeries } from '../src/insights/compute.js'
+import {
+  computeInsights,
+  insightSnapshot,
+  spendingSeries,
+  UNKNOWN_MERCHANT_ID
+} from '../src/insights/compute.js'
 
 const receipt = (id, date, total, category = 'food_grocery', merchant = 'Market') => ({
   id, transactionDate: date, totalMinor: total, categoryId: category,
-  merchantNormalized: merchant, merchantRaw: merchant, status: 'confirmed'
+  merchantNormalized: merchant, merchantRaw: merchant, status: 'confirmed', currency: 'EUR'
 })
 
 describe('computeInsights', () => {
@@ -82,6 +87,50 @@ describe('computeInsights', () => {
     expect(result.period).toMatchObject({ start: '2026-07-01', end: '2026-07-14' })
   })
 
+  it('keeps every aggregate in the default currency and reports excluded receipts', () => {
+    const receipts = [
+      receipt('eur-current', '2026-07-10', 4000, 'food_grocery', 'Euro Market'),
+      receipt('eur-previous', '2026-06-10', 2000, 'food_grocery', 'Euro Market'),
+      { ...receipt('usd-current', '2026-07-11', 999900, 'restaurant', 'Dollar Store'), currency: 'usd' },
+      { ...receipt('usd-previous', '2026-06-11', 888800, 'restaurant', 'Dollar Store'), currency: 'USD' }
+    ]
+    const items = [
+      {
+        receiptId: 'eur-current', normalizedName: 'Pane', rawName: 'PANE', totalPriceMinor: 4000,
+        unitPriceMinor: 4000, quantity: 1, categoryId: 'food_grocery'
+      },
+      {
+        receiptId: 'usd-current', normalizedName: 'Burger', rawName: 'BURGER', totalPriceMinor: 999900,
+        unitPriceMinor: 999900, quantity: 1, categoryId: 'restaurant'
+      }
+    ]
+
+    const result = computeInsights(receipts, items, {
+      now: new Date('2026-07-14T12:00:00Z'), defaultCurrency: 'eur'
+    })
+
+    expect(result).toMatchObject({ total: 4000, previousTotal: 2000, difference: 2000, excludedCurrencyCount: 2 })
+    expect(result.categories.map((entry) => entry.id)).toEqual(['food_grocery'])
+    expect(result.merchants.map((entry) => entry.id)).toEqual(['Euro Market'])
+    expect(result.products.map((entry) => entry.id)).toEqual(['Pane'])
+    expect(result.spending.monthly.at(-1).total).toBe(4000)
+    expect(insightSnapshot(result).items.map((entry) => entry.id)).toEqual(['Pane'])
+  })
+
+  it('folds unknown legacy item and receipt categories into other', () => {
+    const receipts = [
+      receipt('with-item', '2026-07-10', 500, 'legacy_receipt'),
+      receipt('fallback', '2026-07-11', 300, 'legacy_receipt')
+    ]
+    const items = [{ receiptId: 'with-item', totalPriceMinor: 500, categoryId: 'legacy_item' }]
+
+    const result = computeInsights(receipts, items, { now: new Date('2026-07-14T12:00:00Z') })
+
+    expect(result.categories).toEqual([
+      expect.objectContaining({ id: 'other', total: 800, count: 2 })
+    ])
+  })
+
   it('only reports a price change after three exact and consistent observations', () => {
     const receipts = [
       receipt('a', '2026-05-10', 200),
@@ -104,5 +153,66 @@ describe('computeInsights', () => {
     expect(computeInsights(receipts, [item('a', 200), item('b', 200), item('c', 300)], {
       now: new Date(2026, 6, 14)
     }).priceChanges[0]).toMatchObject({ latest: 300, previousAverage: 200, changePercent: 50 })
+  })
+
+  it('counts product frequency by distinct receipt while summing lines', () => {
+    const receipts = [receipt('same-receipt', '2026-07-10', 250)]
+    const items = [
+      {
+        receiptId: 'same-receipt', normalizedName: 'Mele', rawName: 'MELE',
+        totalPriceMinor: 100, quantity: 1, categoryId: 'food_grocery'
+      },
+      {
+        receiptId: 'same-receipt', normalizedName: 'Mele', rawName: 'MELE',
+        totalPriceMinor: 150, quantity: 2, categoryId: 'food_grocery'
+      }
+    ]
+
+    const product = computeInsights(receipts, items, {
+      now: new Date('2026-07-14T12:00:00Z')
+    }).products[0]
+
+    expect(product).toMatchObject({
+      id: 'Mele', total: 250, quantity: 3, frequency: 1
+    })
+  })
+
+  it('does not send the unknown-merchant sentinel to the AI', () => {
+    const snapshot = insightSnapshot({
+      period: {
+        start: '2026-07-01', end: '2026-07-31',
+        previousStart: '2026-06-01', previousEnd: '2026-06-30'
+      },
+      total: 100,
+      previousTotal: 0,
+      categories: [],
+      merchants: [
+        { id: UNKNOWN_MERCHANT_ID, total: 100 },
+        { id: 'Known Market', total: 50 }
+      ],
+      products: [],
+      priceChanges: []
+    })
+
+    expect(snapshot.merchants).toEqual([{ id: 'Known Market', total: 50 }])
+  })
+
+  it('bounds every collection sent to the AI insight endpoint', () => {
+    const entries = Array.from({ length: 101 }, (_, index) => ({ id: `entry-${index}` }))
+    const snapshot = insightSnapshot({
+      period: { start: '2026-07-01', end: '2026-07-31', previousStart: '2026-06-01', previousEnd: '2026-06-30' },
+      total: 0,
+      previousTotal: 0,
+      categories: entries,
+      merchants: entries,
+      products: entries,
+      priceChanges: entries
+    })
+
+    expect(snapshot.categories).toHaveLength(100)
+    expect(snapshot.merchants).toHaveLength(100)
+    expect(snapshot.items).toHaveLength(100)
+    expect(snapshot.priceChanges).toHaveLength(100)
+    expect(snapshot.categories.at(-1).id).toBe('entry-99')
   })
 })

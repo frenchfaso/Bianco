@@ -26,6 +26,7 @@ def enqueue_extraction(
         if existing.image_hash != image_hash:
             existing.image_hash = image_hash
             existing.provider_id = resolve_active_provider_id(session, settings)
+            existing.model_id = None
             existing.locale = locale
             existing.currency = currency
             existing.status = "pending"
@@ -43,6 +44,7 @@ def enqueue_extraction(
         receipt_id=receipt_id,
         image_hash=image_hash,
         provider_id=resolve_active_provider_id(session, settings),
+        model_id=None,
         locale=locale,
         currency=currency,
         status="pending",
@@ -104,6 +106,7 @@ def retry_extraction(
     if job is None:
         return None
     job.provider_id = resolve_active_provider_id(session, settings)
+    job.model_id = None
     job.status = "pending"
     job.attempts = 0
     job.next_attempt_at = None
