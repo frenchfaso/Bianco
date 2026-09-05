@@ -29,7 +29,7 @@ export default defineConfig({
     },
     {
       name: 'webkit',
-      testMatch: '**/webkit-smoke.spec.js',
+      testMatch: ['**/webkit-smoke.spec.js', '**/offline-edit.spec.js'],
       use: { browserName: 'webkit' }
     }
   ],

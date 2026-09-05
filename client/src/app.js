@@ -20,23 +20,20 @@ import {
   createManualReceipt,
   deleteReceipt,
   getReceiptDetail,
-  observeItems,
-  observeReceipts,
-  replaceReceiptItems,
-  updateReceipt
+  observeReceiptData
 } from './stores/receipts.js'
+import { queueReceiptEdit } from './stores/receipt-edits.js'
+import { flushReceiptEdits, withReceiptEditLock } from './sync/receipt-edit-queue.js'
 import { apiFetch } from './sync/api.js'
 import {
-  buildReceiptAggregateUpdate,
   getReceiptAggregate,
   isReceiptAggregateConflict,
-  putReceiptAggregate,
   receiptAggregateEditableSnapshot,
   receiptAggregateMatches
 } from './sync/receipt-aggregates.js'
 import { resyncNow, startReplication } from './sync/replication.js'
 import { downloadBackup } from './utils/backup.js'
-import { createId, getDeviceId } from './utils/ids.js'
+import { createId } from './utils/ids.js'
 
 const emptyInsights = computeInsights([], [])
 const THEME_STORAGE_KEY = 'bianco-theme'
@@ -119,7 +116,8 @@ export function biancoApp() {
     settingsOpen: false,
     settingsTrigger: null,
     online: navigator.onLine,
-    syncStatus: 'disabled',
+    replicationStatus: 'disabled',
+    receiptEdits: [],
     receiptsReady: false,
     itemsReady: false,
     summaryValidationRevision: 0,
@@ -207,6 +205,9 @@ export function biancoApp() {
       },
       baseRevision: null,
       baseAggregateSnapshot: null,
+      displayedSnapshot: null,
+      editId: null,
+      editStatus: null,
       dirty: false
     },
     detailRefreshTimer: null,
@@ -247,20 +248,17 @@ export function biancoApp() {
         database = await getDatabase()
         const settingsDocument = await database.settings.findOne('singleton').exec()
         await this.setSettings(settingsDocument.toJSON())
-        observeReceipts(database, (receipts) => {
+        observeReceiptData(database, ({ receipts, items, edits }) => {
           const previousStatuses = new Map(this.receipts.map((receipt) => [receipt.id, receipt.status]))
           this.receipts = receipts
+          this.items = items
+          this.receiptEdits = edits
           this.receiptsReady = true
+          this.itemsReady = true
           this.recompute()
           if (receipts.some((receipt) =>
             receipt.status === 'needs_review' && ['queued', 'processing'].includes(previousStatuses.get(receipt.id))
           )) this.notify(this.t('notification.analysisCompleted'))
-          this.scheduleDetailRefresh()
-        })
-        observeItems(database, (items) => {
-          this.items = items
-          this.itemsReady = true
-          this.recompute()
           this.scheduleDetailRefresh()
         })
         database.jobs.find().$.subscribe((documents) => {
@@ -272,11 +270,12 @@ export function biancoApp() {
         await recoverInterruptedJobs(database)
         await startReplication(
           database,
-          (status) => { this.syncStatus = status },
+          (status) => { this.replicationStatus = status },
           (event) => {
             if (['REMOTE_CONNECTED', 'AI_CONFIGURATION_CHANGED'].includes(event)) {
               void this.refreshProviders(false, true)
             }
+            if (['REMOTE_CONNECTED', 'RESYNC'].includes(event)) void this.syncReceiptEdits()
           }
         )
         await this.refreshProviders(false, true)
@@ -291,6 +290,7 @@ export function biancoApp() {
       window.addEventListener('online', () => {
         this.online = true
         resyncNow()
+        void this.syncReceiptEdits()
         void this.refreshProviders(false, true)
         void this.runJobs()
       })
@@ -300,6 +300,7 @@ export function biancoApp() {
         this.online = navigator.onLine
         if (!this.online) return
         resyncNow()
+        void this.syncReceiptEdits()
         void this.refreshProviders(false, true)
       }
       document.addEventListener('visibilitychange', refreshVisibleClient)
@@ -311,6 +312,7 @@ export function biancoApp() {
         if (this.languagePreference === 'auto') void this.updateLanguagePreference('auto')
       })
       window.setInterval(() => void this.runJobs(), 30_000)
+      window.setInterval(() => void this.syncReceiptEdits(), 5000)
     },
 
     async setSettings(settings) {
@@ -592,6 +594,12 @@ export function biancoApp() {
       }
     },
 
+    get syncStatus() {
+      if (this.replicationStatus === 'error' || this.receiptEdits.some((edit) => edit.status !== 'pending')) return 'error'
+      if (this.receiptEdits.length) return 'syncing'
+      return this.replicationStatus
+    },
+
     get syncLabel() {
       const labels = { syncing: 'syncing', idle: 'online', error: 'paused', disabled: 'localOnly' }
       return this.t(`connection.${labels[this.syncStatus] || 'localOnly'}`)
@@ -604,11 +612,16 @@ export function biancoApp() {
       this.jobs
         .filter((job) => job.status === 'pending' || job.status === 'processing')
         .forEach((job) => receiptIds.add(job.receiptId || job.id))
+      this.receiptEdits.filter((edit) => edit.status === 'pending').forEach((edit) => receiptIds.add(edit.id))
       return receiptIds.size
     },
 
     get attentionCount() {
-      return this.receipts.filter((receipt) => ['needs_review', 'failed'].includes(receipt.status)).length
+      return this.receipts.filter((receipt) => ['needs_review', 'failed'].includes(receipt.status) || this.receiptEditNeedsAttention(receipt.id)).length
+    },
+
+    receiptEditNeedsAttention(receiptId) {
+      return this.receiptEdits.some((edit) => edit.id === receiptId && edit.status !== 'pending')
     },
 
     get editingProvider() {
@@ -886,11 +899,14 @@ export function biancoApp() {
           backgroundPosition: 'center',
           backgroundSize: 'auto'
         },
-        baseRevision: null,
-        baseAggregateSnapshot: receiptAggregateEditableSnapshot(receipt, result.items),
+        baseRevision: result.edit?.baseRevision ?? null,
+        baseAggregateSnapshot: result.edit ? JSON.parse(result.edit.baseSnapshot) : receiptAggregateEditableSnapshot(receipt, result.items),
+        displayedSnapshot: receiptAggregateEditableSnapshot(receipt, result.items),
+        editId: result.edit?.editId || null,
+        editStatus: result.edit?.status || null,
         dirty: false
       }
-      if (this.online) void this.loadReceiptAggregateRevision(receiptId)
+      if (this.online && !result.edit) void this.loadReceiptAggregateRevision(receiptId)
       if (!this.detail.imageUrl && receipt.imageHash && this.online) {
         try {
           const blob = await downloadRemoteImage(database, receipt, 'thumbnail')
@@ -941,6 +957,7 @@ export function biancoApp() {
       if (!this.detail.open) return
       this.detailRefreshPending = true
       if (
+        this.busy ||
         this.detail.dirty ||
         this.detail.fullLoading ||
         this.imageViewerOpen ||
@@ -953,6 +970,7 @@ export function biancoApp() {
         if (
           this.detail.open &&
           this.detail.id === receiptId &&
+          !this.busy &&
           !this.detail.dirty &&
           !this.imageViewerOpen &&
           this.detail.lens.pointerId === null
@@ -1162,25 +1180,23 @@ export function biancoApp() {
           // Retained only for old clients; item categories are authoritative.
           categoryId: dominantItemCategory(items)
         }
-        if (this.online && !Number.isInteger(this.detail.baseRevision)) {
-          const aggregateState = await this.loadReceiptAggregateRevision(this.detail.id)
-          if (aggregateState === 'conflict') {
-            this.notify(this.t('error.receiptConflict'), 'error')
+        this.detail.editId = await queueReceiptEdit(database, {
+          receiptId: this.detail.id,
+          editId: this.detail.editId,
+          baseRevision: this.detail.baseRevision,
+          baseSnapshot: this.detail.baseAggregateSnapshot,
+          displayedSnapshot: this.detail.displayedSnapshot,
+          receipt: { ...form, ...receiptChanges },
+          items
+        })
+        if (this.online) {
+          const results = await this.syncReceiptEdits()
+          const status = results?.get(this.detail.id)
+          if (status === 'conflict' || status === 'rejected') {
+            this.detail.editStatus = status
+            this.notify(this.t(status === 'conflict' ? 'error.receiptConflict' : 'error.saveFailed'), 'error')
             return
           }
-        }
-        if (this.online && Number.isInteger(this.detail.baseRevision)) {
-          const aggregate = await putReceiptAggregate(this.detail.id, buildReceiptAggregateUpdate({
-            baseRevision: this.detail.baseRevision,
-            updatedByDevice: getDeviceId(),
-            receipt: { ...form, ...receiptChanges },
-            items
-          }))
-          this.detail.baseRevision = aggregate.revision
-          await applyReceiptAggregate(database, aggregate)
-        } else {
-          await replaceReceiptItems(database, this.detail.id, items, true)
-          await updateReceipt(database, this.detail.id, receiptChanges, true)
         }
         this.closeDetail()
         this.view = 'archive'
@@ -1192,6 +1208,42 @@ export function biancoApp() {
       }
     },
 
+    async syncReceiptEdits() {
+      if (!database || !this.online) return
+      try {
+        return await flushReceiptEdits(database)
+      } catch {
+        // The complete edit is durable; retry after a transient local failure.
+        this.replicationStatus = 'error'
+      }
+    },
+
+    async useSyncedReceipt() {
+      if (!await this.confirmAction({
+        title: this.t('receiptDetail.useSynced'),
+        message: this.t('receiptDetail.discardPending'),
+        confirmLabel: this.t('receiptDetail.useSynced'),
+        destructive: true
+      })) return
+      try {
+        // Require a successful authenticated read before discarding the draft.
+        await withReceiptEditLock(database, async () => {
+          const aggregate = await getReceiptAggregate(this.detail.id)
+          const edit = await database.receipt_edits.findOne(this.detail.id).exec()
+          await applyReceiptAggregate(database, aggregate)
+          await edit?.incrementalModify((current) => {
+            if (current.editId !== this.detail.editId) throw new Error('Draft changed in another tab')
+            return { ...current, _deleted: true }
+          })
+        })
+        resyncNow()
+        this.detail.dirty = false
+        await this.openReceipt(this.detail.id)
+      } catch {
+        this.notify(this.t('error.backendUnavailable'), 'error')
+      }
+    },
+
     async removeCurrentReceipt() {
       const confirmed = await this.confirmAction({
         title: this.t('confirm.deleteReceiptTitle'),
@@ -1200,7 +1252,7 @@ export function biancoApp() {
         destructive: true
       })
       if (!confirmed) return
-      await deleteReceipt(database, this.detail.id)
+      await withReceiptEditLock(database, () => deleteReceipt(database, this.detail.id))
       this.closeDetail()
       this.notify(this.t('notification.receiptDeleted'))
     },

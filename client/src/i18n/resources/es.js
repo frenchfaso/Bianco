@@ -220,6 +220,9 @@ export default {
     activationFailed: 'No se ha podido activar el proveedor. Comprueba la configuración e inténtalo de nuevo.'
   },
   receiptDetail: {
+    syncReview: "Revisar cambios",
+    useSynced: "Cargar versión sincronizada",
+    discardPending: "¿Descartar los cambios pendientes de este dispositivo y cargar el recibo sincronizado?",
     title: 'Revisar recibo',
     close: 'Cerrar',
     photoAlt: 'Fotografía del recibo',

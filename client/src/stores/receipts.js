@@ -1,4 +1,6 @@
 import { createId, getDeviceId, nowIso, todayLocal } from '../utils/ids.js'
+import { combineLatest } from 'rxjs'
+import { overlayReceiptEdits } from './receipt-edits.js'
 
 const emptyAi = {
   providerId: null,
@@ -153,7 +155,10 @@ export async function replaceReceiptItems(db, receiptId, items, userEdited = fal
     if (changed) patches.push(document.incrementalPatch({ ...values, updatedAt: timestamp, updatedByDevice: deviceId }))
   })
   await Promise.all(patches)
-  if (inserts.length) await db.receipt_items.bulkInsert(inserts)
+  if (inserts.length) {
+    const result = await db.receipt_items.bulkInsert(inserts)
+    if (result.error.length) throw new Error('Receipt items could not be stored')
+  }
   await Promise.all(existing
     .filter((document) => !incomingIds.has(document.id))
     .map((document) => document.remove()))
@@ -206,13 +211,18 @@ export async function applyReceiptAggregate(db, aggregate) {
     else inserts.push({ id: item.id, ...values })
   }
   await Promise.all(patches)
-  if (inserts.length) await db.receipt_items.bulkInsert(inserts)
+  if (inserts.length) {
+    const result = await db.receipt_items.bulkInsert(inserts)
+    if (result.error.length) throw new Error('Receipt items could not be stored')
+  }
   await Promise.all(localItems
     .filter((document) => !remoteIds.has(document.id))
     .map((document) => document.remove()))
 }
 
 export async function deleteReceipt(db, receiptId) {
+  const edit = await db.receipt_edits?.findOne(receiptId).exec()
+  await edit?.remove()
   const receipt = await db.receipts.findOne(receiptId).exec()
   const imageHash = receipt?.imageHash
   const items = await db.receipt_items.find({ selector: { receiptId } }).exec()
@@ -237,10 +247,21 @@ export async function getReceiptDetail(db, receiptId) {
     selector: { receiptId },
     sort: [{ position: 'asc' }]
   }).exec()
-  return {
-    receipt: receipt.toJSON(),
-    items: items.map((item) => item.toJSON())
-  }
+  const edit = await db.receipt_edits?.findOne(receiptId).exec()
+  const visible = overlayReceiptEdits([receipt.toJSON()], items.map((item) => item.toJSON()), edit ? [edit.toJSON()] : [])
+  return { receipt: visible.receipts[0], items: visible.items, edit: edit?.toJSON() || null }
+}
+
+export function observeReceiptData(db, callback) {
+  return combineLatest([
+    db.receipts.find().$, db.receipt_items.find().$, db.receipt_edits.find().$
+  ]).subscribe(([receipts, items, edits]) => {
+    const pending = edits.map((document) => document.toJSON())
+    callback({
+      ...overlayReceiptEdits(receipts.map((document) => document.toJSON()), items.map((document) => document.toJSON()), pending),
+      edits: pending
+    })
+  })
 }
 
 export function observeReceipts(db, callback) {

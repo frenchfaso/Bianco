@@ -6,10 +6,11 @@ async function blobToDataUrl(blob) {
 }
 
 export async function buildBackup(db, includeImages = false) {
-  const [receiptDocuments, itemDocuments, imageDocuments] = await Promise.all([
+  const [receiptDocuments, itemDocuments, imageDocuments, editDocuments] = await Promise.all([
     db.receipts.find().exec(),
     db.receipt_items.find().exec(),
-    db.images.find().exec()
+    db.images.find().exec(),
+    db.receipt_edits?.find().exec() || []
   ])
   const images = []
   if (includeImages) {
@@ -23,12 +24,18 @@ export async function buildBackup(db, includeImages = false) {
       })
     }
   }
+  const visible = overlayReceiptEdits(
+    receiptDocuments.map((document) => document.toJSON()),
+    itemDocuments.map((document) => document.toJSON()),
+    editDocuments.map((document) => document.toJSON())
+  )
   return {
     application: 'bianco',
     schemaVersion: 1,
     exportedAt: new Date().toISOString(),
-    receipts: receiptDocuments.map((document) => document.toJSON()),
-    items: itemDocuments.map((document) => document.toJSON()),
+    receipts: visible.receipts,
+    items: visible.items,
+    pendingEdits: editDocuments.map((document) => document.toJSON()),
     images
   }
 }
@@ -45,3 +52,4 @@ export async function downloadBackup(db, includeImages = false) {
   // task. Keep it alive briefly; it contains only this device's metadata.
   window.setTimeout(() => URL.revokeObjectURL(url), 30_000)
 }
+import { overlayReceiptEdits } from '../stores/receipt-edits.js'

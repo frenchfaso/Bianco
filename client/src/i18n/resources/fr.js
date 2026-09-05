@@ -220,6 +220,9 @@ export default {
     activationFailed: 'Le fournisseur n’a pas pu être activé. Vérifiez la configuration et réessayez.'
   },
   receiptDetail: {
+    syncReview: "Vérifier les modifications",
+    useSynced: "Charger la version synchronisée",
+    discardPending: "Abandonner les modifications en attente sur cet appareil et charger le reçu synchronisé ?",
     title: 'Vérifier le ticket',
     close: 'Fermer',
     photoAlt: 'Photo du ticket de caisse',

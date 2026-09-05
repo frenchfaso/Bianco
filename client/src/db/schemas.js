@@ -194,6 +194,25 @@ const migrateSettingsV5 = (document) => {
 const migrateJobV2 = (document) => document.type === 'ai-extraction' ? null : document
 
 export const collections = {
+  receipt_edits: {
+    schema: {
+      title: 'pending receipt aggregate edit',
+      version: 0,
+      primaryKey: 'id',
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        id: { type: 'string', maxLength: 64 },
+        editId: { type: 'string' },
+        baseRevision: { type: ['integer', 'null'], minimum: 0 },
+        baseSnapshot: { type: 'string' },
+        update: { type: 'string' },
+        status: { type: 'string', enum: ['pending', 'conflict', 'rejected'] },
+        updatedAt: { type: 'string' }
+      },
+      required: ['id', 'editId', 'baseRevision', 'baseSnapshot', 'update', 'status', 'updatedAt']
+    }
+  },
   receipts: { schema: receiptSchema, migrationStrategies: { 1: migrate, 2: migrate } },
   receipt_items: { schema: receiptItemSchema, migrationStrategies: { 1: migrate, 2: migrate } },
   images: { schema: imageSchema, migrationStrategies: { 1: migrate, 2: migrate } },

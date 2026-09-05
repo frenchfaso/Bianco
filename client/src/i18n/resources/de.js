@@ -220,6 +220,9 @@ export default {
     activationFailed: 'Der Anbieter konnte nicht aktiviert werden. Prüfe die Konfiguration und versuche es erneut.'
   },
   receiptDetail: {
+    syncReview: "Änderungen prüfen",
+    useSynced: "Synchronisierte Version laden",
+    discardPending: "Ausstehende Änderungen auf diesem Gerät verwerfen und den synchronisierten Beleg laden?",
     title: 'Beleg prüfen',
     close: 'Schließen',
     photoAlt: 'Foto des Belegs',

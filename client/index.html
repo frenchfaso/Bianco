@@ -214,7 +214,7 @@
                   <strong x-text="receipt.merchantNormalized || receipt.merchantRaw || t('archive.unknownMerchant')"></strong>
                   <small><span x-text="date(receipt.transactionDate || receipt.capturedAt)"></span> · <span x-text="categoryLabel(receipt.categoryId)"></span></small>
                 </span>
-                <span class="receipt-value"><strong x-text="receipt.totalMinor === null ? '—' : money(receipt.totalMinor, receipt.currency)"></strong><small :class="`status ${receipt.status}`" x-text="statusLabel(receipt.status)"></small></span>
+                <span class="receipt-value"><strong x-text="receipt.totalMinor === null ? '—' : money(receipt.totalMinor, receipt.currency)"></strong><small :class="`status ${receiptEditNeedsAttention(receipt.id) ? 'needs_review' : receipt.status}`" x-text="receiptEditNeedsAttention(receipt.id) ? t('receiptDetail.syncReview') : statusLabel(receipt.status)"></small></span>
               </button>
             </template>
             <article class="empty-state" x-show="!filteredReceipts.length">
@@ -464,6 +464,10 @@
               </div>
             </div>
             <form @submit.prevent="saveDetail" @input="detail.dirty = true" @change="detail.dirty = true">
+              <div x-show="detail.editStatus === 'conflict' || detail.editStatus === 'rejected'" role="status">
+                <p class="muted" x-text="t(detail.editStatus === 'conflict' ? 'error.receiptConflict' : 'error.saveFailed')"></p>
+                <button type="button" class="outline compact" @click="useSyncedReceipt" :disabled="!online || busy" x-text="t('receiptDetail.useSynced')"></button>
+              </div>
               <div class="form-grid">
                 <label class="span-2"><span x-text="t('receiptDetail.merchant')"></span><input x-model="detail.form.merchantNormalized" :placeholder="t('receiptDetail.merchantPlaceholder')" /></label>
                 <label><span x-text="t('receiptDetail.date')"></span><input type="date" x-model="detail.form.transactionDate" /></label>
@@ -485,7 +489,7 @@
                 <p class="empty-copy" x-show="!detail.items.length" x-text="t('receiptDetail.noProducts')"></p>
               </div>
               <div class="detail-actions">
-                <button type="button" class="outline danger" @click="removeCurrentReceipt" x-text="t('receiptDetail.delete')"></button>
+                <button type="button" class="outline danger" :disabled="busy" @click="removeCurrentReceipt" x-text="t('receiptDetail.delete')"></button>
                 <span class="spacer"></span>
                 <button type="submit" :aria-busy="busy" :disabled="busy" x-text="t('receiptDetail.save')"></button>
               </div>

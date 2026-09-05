@@ -220,6 +220,9 @@ export default {
     activationFailed: 'The provider could not be activated. Check the configuration and try again.'
   },
   receiptDetail: {
+    syncReview: "Review sync",
+    useSynced: "Load synced version",
+    discardPending: "Discard this device’s pending edits and load the synced receipt?",
     title: 'Review receipt',
     close: 'Close',
     photoAlt: 'Receipt photograph',

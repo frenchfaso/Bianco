@@ -220,6 +220,9 @@ export default {
     activationFailed: 'Non è stato possibile attivare il provider. Controlla la configurazione e riprova.'
   },
   receiptDetail: {
+    syncReview: "Verifica modifiche",
+    useSynced: "Carica versione sincronizzata",
+    discardPending: "Scartare le modifiche in attesa su questo dispositivo e caricare lo scontrino sincronizzato?",
     title: 'Controlla lo scontrino',
     close: 'Chiudi',
     photoAlt: 'Fotografia dello scontrino',
