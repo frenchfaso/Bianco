@@ -59,6 +59,8 @@ jobs:
       BIANCO_SITE_ADDRESS: :80
       BIANCO_BIND_ADDRESS: 127.0.0.1
       BIANCO_HTTP_PORT: 8089
+      # Browser tests use loopback HTTP, so the session cookie must allow HTTP.
+      BIANCO_SESSION_COOKIE_SECURE: "false"
       BIANCO_TEST_AUTH_USER: smoke-user
       BIANCO_TEST_AUTH_PASSWORD: smoke-password
       PLAYWRIGHT_BASE_URL: http://127.0.0.1:8089
