@@ -63,7 +63,8 @@ jobs:
       BIANCO_SESSION_COOKIE_SECURE: "false"
       BIANCO_TEST_AUTH_USER: smoke-user
       BIANCO_TEST_AUTH_PASSWORD: smoke-password
-      PLAYWRIGHT_BASE_URL: http://127.0.0.1:8089
+      # Match the offline fault proxy hostname so host-only auth cookies work.
+      PLAYWRIGHT_BASE_URL: http://localhost:8089
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
